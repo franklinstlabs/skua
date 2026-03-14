@@ -1,0 +1,91 @@
+[project]
+name = "getskua"
+version = "0.1.1"
+description = "Record and share Jupyter notebook findings via shareable links"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [{name = "Franklin Street Labs"}]
+keywords = ["jupyter", "notebook", "sharing", "visualization", "data-science"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.3",
+    "pytest-xdist>=3.5.0",
+    "pytest-playwright>=0.4.0",
+    "black>=23.12.0",
+    "ruff>=0.1.8",
+    "mypy>=1.7.1",
+    "types-requests>=2.31.0",
+    "matplotlib>=3.7.0",
+    "pandas>=2.0.0",
+    "pillow>=10.0.0",
+]
+
+[project.urls]
+Homepage = "https://skua.dev"
+Documentation = "https://skua.dev/docs"
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+# Performance optimizations
+addopts = [
+    "--tb=short",           # Shorter tracebacks for faster output
+    "--strict-markers",     # Ensure test markers are registered
+    "--disable-warnings",   # Suppress warnings for cleaner output
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests requiring backend",
+]
+
+[tool.uv.build-backend]
+module-name = "skua"
+module-root = ""
+
+[build-system]
+requires = ["uv_build>=0.7.19,<0.8.0"]
+build-backend = "uv_build"
