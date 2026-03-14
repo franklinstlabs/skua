@@ -33,11 +33,14 @@ Share the URL with colleagues. Re-run `skua.record()` with the same title to upd
 ## Supported Objects
 
 - **Matplotlib figures** - Saved as high-DPI PNG images
+- **Plotly figures** - Interactive charts, fully embedded
 - **Pandas DataFrames** - Interactive, sortable, filterable tables
-- **NumPy arrays** - Rendered as tables (converted to DataFrames)
-- **Dicts** - Pretty-printed JSON with syntax highlighting
+- **Polars DataFrames** - Rendered as interactive tables
+- **NumPy arrays** - Rendered as tables
 - **PIL Images** - Any `PIL.Image` object, saved as PNG
-- **Text/strings** - Any object with a string representation
+- **Dicts and lists of dicts** - Pretty-printed with syntax highlighting
+- **PyTorch / TensorFlow tensors** - Image tensors rendered as PNG, others as tables
+- **Any object** - Falls back to string representation
 
 ## Configuration
 
@@ -61,7 +64,7 @@ Skua uses anonymous sessions - no account required:
 - Session persists across notebook runs
 - Findings expire after 7 days
 - Limited to 10 findings per session
-- Rate limited to 20 uploads per hour
+- Rate limited to prevent abuse
 
 ## Privacy
 
@@ -80,7 +83,3 @@ MIT License - see LICENSE file for details
 
 Questions or feedback? Email **hello@skua.dev**
 
-## Stay Updated
-
-Get notified about new features and releases:  
-**https://skua.dev/subscribe**
