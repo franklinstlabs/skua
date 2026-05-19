@@ -48,7 +48,7 @@ class MatplotlibSerializer:
 
         # Save figure to bytes
         buf = io.BytesIO()
-        obj.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+        obj.savefig(buf, format="png", bbox_inches="tight", dpi=200)
         buf.seek(0)
         img_bytes = buf.read()
 
@@ -60,7 +60,7 @@ class MatplotlibSerializer:
             "format": "png",
             "data": img_b64,
             "metadata": {
-                "dpi": 150,
+                "dpi": 200,
                 "size_bytes": len(img_bytes),
             },
         }
@@ -183,11 +183,39 @@ class NumpySerializer:
         return result
 
 
+def _plotly_png_bytes(fig: Any) -> Any:
+    """Render a plotly figure to a 1200×630 PNG if kaleido is available.
+
+    Returns None when kaleido isn't installed or rendering fails. The sidecar
+    PNG is used as the OpenGraph preview image on record pages; a missing
+    image is fine — the record page falls back to the generic home card.
+
+    Kaleido is an optional dep (install via `pip install getskua[plotly]`).
+    """
+    try:
+        import kaleido  # noqa: F401
+    except ImportError:
+        return None
+    try:
+        # 1200×630 matches LinkedIn/Twitter's preferred OG card size. scale=1
+        # keeps the PNG under ~50 KB for typical charts — well below platform
+        # caps. Let kaleido use its bundled chromium-mini.
+        return fig.to_image(format="png", width=1200, height=630, scale=1)
+    except Exception:
+        # Kaleido can fail for many reasons (sandbox issues, font availability,
+        # figures with unsupported traces). Silently skip — the record still
+        # uploads successfully, just without an OG preview.
+        return None
+
+
 class PlotlySerializer:
     """Serializer for Plotly figures.
 
-    Stores the figure as JSON. The frontend renders it interactively with
-    plotly.js and handles PNG export client-side — no server-side renderer needed.
+    Stores the figure as JSON — the frontend renders it interactively with
+    plotly.js. If `kaleido` is installed, also generates a 1200×630 PNG
+    sidecar so social-preview scrapers (LinkedIn/Slack/X) show the chart
+    instead of a bare link. The primary `data` field is always JSON; the
+    PNG rides alongside as `preview_png_b64`.
     """
 
     def can_serialize(self, obj: Any) -> bool:
@@ -199,16 +227,24 @@ class PlotlySerializer:
 
     def serialize(self, obj: Any) -> Dict[str, Any]:
         json_str = obj.to_json()
-        return {
+        result: Dict[str, Any] = {
             "type": "plotly.figure",
             "format": "json",
             "data": json_str,
             "metadata": {},
         }
+        png_bytes = _plotly_png_bytes(obj)
+        if png_bytes:
+            result["preview_png_b64"] = base64.b64encode(png_bytes).decode("utf-8")
+        return result
 
 
 class PolarsDataFrameSerializer:
-    """Serializer for Polars DataFrames, converted via pandas."""
+    """Serializer for Polars DataFrames — produces orient=split JSON natively.
+
+    Avoids the pandas/pyarrow round-trip so users with just `polars` installed
+    don't also need pyarrow.
+    """
 
     def can_serialize(self, obj: Any) -> bool:
         try:
@@ -218,11 +254,27 @@ class PolarsDataFrameSerializer:
             return False
 
     def serialize(self, obj: Any) -> Dict[str, Any]:
+        import json
         import polars as pl
-        df = obj.collect().to_pandas() if isinstance(obj, pl.LazyFrame) else obj.to_pandas()
-        result = PandasDataFrameSerializer().serialize(df)
-        result["type"] = "polars.dataframe"
-        return result
+
+        df = obj.collect() if isinstance(obj, pl.LazyFrame) else obj
+        columns = list(df.columns)
+        data = [list(row) for row in df.iter_rows()]
+        json_str = json.dumps(
+            {"columns": columns, "index": list(range(df.height)), "data": data},
+            default=str,
+        )
+        return {
+            "type": "polars.dataframe",
+            "format": "json",
+            "data": json_str,
+            "metadata": {
+                "shape": df.shape,
+                "columns": columns,
+                "dtypes": {col: str(dtype) for col, dtype in zip(df.columns, df.dtypes)},
+                "index_name": None,
+            },
+        }
 
 
 class TorchTensorSerializer:

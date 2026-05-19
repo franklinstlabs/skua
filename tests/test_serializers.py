@@ -226,7 +226,7 @@ class TestMatplotlibSerializer:
         """Test that metadata is correctly extracted."""
         result = matplotlib_serializer.serialize(simple_figure)
 
-        assert result["metadata"]["dpi"] == 150
+        assert result["metadata"]["dpi"] == 200
         assert "size_bytes" in result["metadata"]
         assert result["metadata"]["size_bytes"] > 0
 
@@ -385,8 +385,9 @@ class TestPandasDataFrameSerializer:
         """Test that serialized data can be reconstructed."""
         pd = pytest.importorskip("pandas")
 
+        from io import StringIO
         result = pandas_serializer.serialize(simple_dataframe)
-        reconstructed = pd.read_json(result["data"], orient="split")
+        reconstructed = pd.read_json(StringIO(result["data"]), orient="split")
 
         # Compare DataFrames
         assert list(reconstructed.columns) == list(simple_dataframe.columns)
@@ -624,7 +625,8 @@ class TestNumpySerializer:
         arr = np.array([[1, 2, 3], [4, 5, 6]])
         result = numpy_serializer.serialize(arr)
 
-        reconstructed = pd.read_json(result["data"], orient="split")
+        from io import StringIO
+        reconstructed = pd.read_json(StringIO(result["data"]), orient="split")
         np.testing.assert_array_equal(reconstructed.values, arr)
 
     def test_serialize_empty_array(self, numpy_serializer):
@@ -1630,32 +1632,46 @@ class TestPlotlySerializer:
         assert not s.can_serialize("hello")
         assert not s.can_serialize(42)
 
-    def test_serialize_produces_png(self):
+    def test_serialize_primary_is_json(self):
+        # Primary payload stays JSON — interactive client-side rendering needs
+        # the raw plotly spec, not a flattened PNG.
+        go = pytest.importorskip("plotly.graph_objects")
+        from skua.serializers import PlotlySerializer
+        s = PlotlySerializer()
+        fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4]))
+        result = s.serialize(fig)
+        assert result["type"] == "plotly.figure"
+        assert result["format"] == "json"
+        # data is the to_json() string — it parses back cleanly
+        import json
+        parsed = json.loads(result["data"])
+        assert "data" in parsed
+
+    def test_serialize_adds_preview_png_when_kaleido_available(self):
+        # With kaleido, the serializer emits a sidecar PNG at 1200×630 — used
+        # as the OpenGraph image by record pages. JSON primary is unchanged.
         go = pytest.importorskip("plotly.graph_objects")
         pytest.importorskip("kaleido")
         from skua.serializers import PlotlySerializer
         s = PlotlySerializer()
         fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4]))
         result = s.serialize(fig)
-        assert result["type"] == "plotly.figure"
-        assert result["format"] == "png"
-        img_bytes = base64.b64decode(result["data"])
-        assert img_bytes[:4] == b"\x89PNG"
+        assert "preview_png_b64" in result
+        png_bytes = base64.b64decode(result["preview_png_b64"])
+        assert png_bytes[:4] == b"\x89PNG"
 
-    def test_serialize_raises_on_missing_kaleido(self, monkeypatch):
+    def test_serialize_without_kaleido_omits_preview_png(self, monkeypatch):
+        # No kaleido → primary JSON only, no preview_png_b64 key. The upload
+        # path then doesn't add a sidecar multipart file.
         go = pytest.importorskip("plotly.graph_objects")
-        from skua.serializers import PlotlySerializer
-        from skua.exceptions import SerializationError
-        s = PlotlySerializer()
-        fig = go.Figure()
-
-        def fake_to_image(*args, **kwargs):
-            raise Exception("kaleido not found")
-
-        monkeypatch.setattr(fig, "to_image", fake_to_image)
-        with pytest.raises(SerializationError, match="kaleido"):
-            s.serialize(fig)
-
+        import sys
+        # Hide kaleido's import_module path by monkeypatching the helper.
+        from skua import serializers as ser
+        monkeypatch.setattr(ser, "_plotly_png_bytes", lambda fig: None)
+        s = ser.PlotlySerializer()
+        fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4]))
+        result = s.serialize(fig)
+        assert "preview_png_b64" not in result
 
 class TestPolarsSerializer:
     """Tests for PolarsDataFrameSerializer."""
@@ -1700,6 +1716,28 @@ class TestPolarsSerializer:
         lf = pl.LazyFrame({"a": [10, 20]})
         result = s.serialize(lf)
         assert result["type"] == "polars.dataframe"
+
+    def test_serialize_without_pyarrow(self, monkeypatch):
+        """Polars snap should work even if pyarrow is not installed."""
+        pl = pytest.importorskip("polars")
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "pyarrow" or name.startswith("pyarrow."):
+                raise ModuleNotFoundError("No module named 'pyarrow'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        from skua.serializers import PolarsDataFrameSerializer
+        s = PolarsDataFrameSerializer()
+        df = pl.DataFrame({"x": [1, 2], "y": ["a", "b"]})
+        result = s.serialize(df)
+        parsed = json.loads(result["data"])
+        assert parsed["columns"] == ["x", "y"]
+        assert parsed["data"] == [[1, "a"], [2, "b"]]
 
 
 class TestTorchTensorSerializer:

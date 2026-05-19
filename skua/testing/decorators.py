@@ -44,8 +44,8 @@ def docs_example(
             fig, ax = plt.subplots()
             ax.plot([1, 2, 3], [1, 4, 9])
 
-            finding = skua.record(fig, "my-plot")
-            assert finding.url is not None
+            rec = skua.record(fig, "my-plot")
+            assert rec.url is not None
     """
     def decorator(func: Callable) -> Callable:
         func._docs_example = {
@@ -60,23 +60,23 @@ def docs_example(
     return decorator
 
 
-def demo_finding(
+def demo_record(
     name: str,
     title: Optional[str] = None,
     featured: bool = False
 ) -> Callable:
-    """Mark a test to create a finding in demo mode.
+    """Mark a test to create a record in demo mode.
 
     When pytest runs with --demo-mode, this test will create an actual
-    finding in the demo workspace instead of using mocks.
+    record in the demo workspace instead of using mocks.
 
     Args:
-        name: Unique name for this demo finding
+        name: Unique name for this demo record
         title: Display title (defaults to name)
-        featured: Whether to highlight this finding in demo account
+        featured: Whether to highlight this record in demo account
 
     Example:
-        @demo_finding(
+        @demo_record(
             name="quarterly-revenue",
             title="Q3 Revenue Analysis",
             featured=True
@@ -84,11 +84,11 @@ def demo_finding(
         def test_revenue_chart():
             '''Creates revenue chart for demo account.'''
             # ... create chart ...
-            finding = skua.record(fig, "quarterly-revenue")
-            assert finding.id is not None
+            rec = skua.record(fig, "quarterly-revenue")
+            assert rec.id is not None
     """
     def decorator(func: Callable) -> Callable:
-        func._demo_finding = {
+        func._demo_record = {
             'name': name,
             'title': title or name,
             'featured': featured,
@@ -96,6 +96,10 @@ def demo_finding(
         # Also mark with pytest marker for filtering
         return func
     return decorator
+
+
+# Silent back-compat alias — `demo_record` is the canonical name now.
+demo_finding = demo_record
 
 
 def marketing_snippet(
@@ -120,7 +124,7 @@ def marketing_snippet(
             import skua
             results = analyze_data()
             skua.record(results, "analysis")
-            # → Live at https://skua.dev/f/abc123
+            # → Live at https://skua.dev/r/abc123
     """
     def decorator(func: Callable) -> Callable:
         func._marketing_snippet = {
@@ -149,12 +153,12 @@ def tutorial_cell(
         @tutorial_cell(
             notebook="getting-started",
             order=20,
-            markdown_before="## Step 2: Capture Your First Finding"
+            markdown_before="## Step 2: Capture Your First Record"
         )
         def test_first_capture():
             import skua
-            finding = skua.record("Hello, Skua!", "first-finding")
-            print(f"View at: {finding.url}")
+            rec = skua.record("Hello, Skua!", "first-record")
+            print(f"View at: {rec.url}")
     """
     def decorator(func: Callable) -> Callable:
         func._tutorial_cell = {

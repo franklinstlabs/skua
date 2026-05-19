@@ -8,7 +8,7 @@ import pytest
 
 from skua.testing.decorators import (
     docs_example,
-    demo_finding,
+    demo_record,
     marketing_snippet,
     tutorial_cell,
 )
@@ -116,61 +116,61 @@ class TestDocsExampleDecorator:
         assert failing_func._docs_example["slug"] == "exception-test"
 
 
-class TestDemoFindingDecorator:
-    """Test the @demo_finding decorator."""
+class TestDemoRecordDecorator:
+    """Test the @demo_record decorator."""
 
     def test_attaches_metadata_with_required_args(self):
-        """Test that decorator attaches _demo_finding attribute."""
+        """Test that decorator attaches _demo_record attribute."""
 
-        @demo_finding(name="test-finding")
+        @demo_record(name="test-record")
         def demo_func():
             pass
 
-        assert hasattr(demo_func, "_demo_finding")
-        assert demo_func._demo_finding["name"] == "test-finding"
+        assert hasattr(demo_func, "_demo_record")
+        assert demo_func._demo_record["name"] == "test-record"
 
     def test_title_defaults_to_name(self):
         """Test that title defaults to name if not provided."""
 
-        @demo_finding(name="quarterly-revenue")
+        @demo_record(name="quarterly-revenue")
         def demo_func():
             pass
 
-        metadata = demo_func._demo_finding
+        metadata = demo_func._demo_record
         assert metadata["title"] == "quarterly-revenue"
 
     def test_custom_title(self):
         """Test that custom title overrides default."""
 
-        @demo_finding(name="quarterly-revenue", title="Q3 Revenue Analysis")
+        @demo_record(name="quarterly-revenue", title="Q3 Revenue Analysis")
         def demo_func():
             pass
 
-        metadata = demo_func._demo_finding
+        metadata = demo_func._demo_record
         assert metadata["title"] == "Q3 Revenue Analysis"
 
     def test_featured_default_false(self):
         """Test that featured defaults to False."""
 
-        @demo_finding(name="test")
+        @demo_record(name="test")
         def demo_func():
             pass
 
-        assert demo_func._demo_finding["featured"] is False
+        assert demo_func._demo_record["featured"] is False
 
     def test_featured_true(self):
         """Test that featured can be set to True."""
 
-        @demo_finding(name="test", featured=True)
+        @demo_record(name="test", featured=True)
         def demo_func():
             pass
 
-        assert demo_func._demo_finding["featured"] is True
+        assert demo_func._demo_record["featured"] is True
 
     def test_preserves_function_behavior(self):
         """Test that decorated function still works correctly."""
 
-        @demo_finding(name="test")
+        @demo_record(name="test")
         def create_chart():
             return "chart-data"
 
@@ -180,7 +180,7 @@ class TestDemoFindingDecorator:
     def test_preserves_function_name(self):
         """Test that decorated function name is preserved."""
 
-        @demo_finding(name="test")
+        @demo_record(name="test")
         def my_demo_function():
             pass
 
@@ -283,23 +283,23 @@ class TestTutorialCellDecorator:
         @tutorial_cell(
             notebook="getting-started",
             order=20,
-            markdown_before="## Step 2: Capture Your First Finding",
+            markdown_before="## Step 2: Capture Your First Record",
         )
         def cell_func():
             pass
 
         metadata = cell_func._tutorial_cell
-        assert metadata["markdown_before"] == "## Step 2: Capture Your First Finding"
+        assert metadata["markdown_before"] == "## Step 2: Capture Your First Record"
 
     def test_preserves_function_behavior(self):
         """Test that decorated function still works correctly."""
 
         @tutorial_cell(notebook="test", order=1)
         def first_capture():
-            return "finding-url"
+            return "record-url"
 
         result = first_capture()
-        assert result == "finding-url"
+        assert result == "record-url"
 
     def test_preserves_function_name(self):
         """Test that decorated function name is preserved."""
@@ -328,22 +328,22 @@ class TestTutorialCellDecorator:
 class TestNestedDecorators:
     """Test that decorators can be stacked/nested."""
 
-    def test_docs_example_and_demo_finding(self):
-        """Test stacking docs_example and demo_finding."""
+    def test_docs_example_and_demo_record(self):
+        """Test stacking docs_example and demo_record."""
 
         @docs_example(slug="test-slug", title="Test Title")
-        @demo_finding(name="demo-test", featured=True)
+        @demo_record(name="demo-test", featured=True)
         def dual_purpose_func():
             return "result"
 
         # Both attributes should be present
         assert hasattr(dual_purpose_func, "_docs_example")
-        assert hasattr(dual_purpose_func, "_demo_finding")
+        assert hasattr(dual_purpose_func, "_demo_record")
 
         # Metadata should be correct
         assert dual_purpose_func._docs_example["slug"] == "test-slug"
-        assert dual_purpose_func._demo_finding["name"] == "demo-test"
-        assert dual_purpose_func._demo_finding["featured"] is True
+        assert dual_purpose_func._demo_record["name"] == "demo-test"
+        assert dual_purpose_func._demo_record["featured"] is True
 
         # Function should still work
         assert dual_purpose_func() == "result"
@@ -352,7 +352,7 @@ class TestNestedDecorators:
         """Test stacking all four decorators."""
 
         @docs_example(slug="all-combined", title="All Decorators")
-        @demo_finding(name="combined-demo")
+        @demo_record(name="combined-demo")
         @marketing_snippet(placement="hero", caption="Amazing!")
         @tutorial_cell(notebook="complete-tutorial", order=1)
         def fully_decorated():
@@ -360,7 +360,7 @@ class TestNestedDecorators:
 
         # All attributes should be present
         assert hasattr(fully_decorated, "_docs_example")
-        assert hasattr(fully_decorated, "_demo_finding")
+        assert hasattr(fully_decorated, "_demo_record")
         assert hasattr(fully_decorated, "_marketing_snippet")
         assert hasattr(fully_decorated, "_tutorial_cell")
 
@@ -407,15 +407,15 @@ class TestDecoratorWithAsyncFunctions:
 
         assert asyncio.iscoroutinefunction(async_example)
 
-    def test_demo_finding_with_async(self):
-        """Test @demo_finding with async function."""
+    def test_demo_record_with_async(self):
+        """Test @demo_record with async function."""
 
-        @demo_finding(name="async-demo")
+        @demo_record(name="async-demo")
         async def async_demo():
             return "async-demo-result"
 
-        assert hasattr(async_demo, "_demo_finding")
-        assert async_demo._demo_finding["name"] == "async-demo"
+        assert hasattr(async_demo, "_demo_record")
+        assert async_demo._demo_record["name"] == "async-demo"
 
     def test_marketing_snippet_with_async(self):
         """Test @marketing_snippet with async function."""
@@ -463,16 +463,16 @@ class TestDecoratorWithClassMethods:
         assert hasattr(ExampleClass.example_method, "_docs_example")
         assert instance.example_method() == "method-result"
 
-    def test_demo_finding_on_class_method(self):
-        """Test @demo_finding on classmethod."""
+    def test_demo_record_on_class_method(self):
+        """Test @demo_record on classmethod."""
 
         class DemoClass:
             @classmethod
-            @demo_finding(name="classmethod-demo")
+            @demo_record(name="classmethod-demo")
             def class_demo(cls):
                 return "classmethod-result"
 
-        assert hasattr(DemoClass.class_demo, "_demo_finding")
+        assert hasattr(DemoClass.class_demo, "_demo_record")
         assert DemoClass.class_demo() == "classmethod-result"
 
     def test_marketing_snippet_on_static_method(self):
@@ -611,26 +611,26 @@ class TestMetadataExtraction:
         assert cat_a_sorted[0]["slug"] == "example-3"  # order 5
         assert cat_a_sorted[1]["slug"] == "example-1"  # order 10
 
-    def test_filter_featured_demo_findings(self):
-        """Test filtering for featured demo findings."""
+    def test_filter_featured_demo_records(self):
+        """Test filtering for featured demo records."""
 
-        @demo_finding(name="regular", featured=False)
+        @demo_record(name="regular", featured=False)
         def regular():
             pass
 
-        @demo_finding(name="featured-1", featured=True)
+        @demo_record(name="featured-1", featured=True)
         def featured1():
             pass
 
-        @demo_finding(name="featured-2", featured=True)
+        @demo_record(name="featured-2", featured=True)
         def featured2():
             pass
 
         functions = [regular, featured1, featured2]
         featured = [
-            f._demo_finding
+            f._demo_record
             for f in functions
-            if hasattr(f, "_demo_finding") and f._demo_finding["featured"]
+            if hasattr(f, "_demo_record") and f._demo_record["featured"]
         ]
 
         assert len(featured) == 2
@@ -678,14 +678,14 @@ class TestImportFromPackage:
         """Test import from skua.testing namespace."""
         from skua.testing import (
             docs_example,
-            demo_finding,
+            demo_record,
             marketing_snippet,
             tutorial_cell,
         )
 
         # All should be callable
         assert callable(docs_example)
-        assert callable(demo_finding)
+        assert callable(demo_record)
         assert callable(marketing_snippet)
         assert callable(tutorial_cell)
 
@@ -693,7 +693,7 @@ class TestImportFromPackage:
         """Test that __all__ contains expected exports."""
         from skua import testing
 
-        expected = ["docs_example", "demo_finding", "marketing_snippet", "tutorial_cell"]
+        expected = ["docs_example", "demo_record", "marketing_snippet", "tutorial_cell"]
         for name in expected:
             assert name in testing.__all__
             assert hasattr(testing, name)

@@ -1,7 +1,7 @@
 """Tests for the Skua HTTP client module.
 
 Covers:
-- upload_finding() - main upload function
+- upload_record() - main upload function
 - get_session_id() - session management
 - request_verification() - email verification flow
 - get_auth_status() - authentication status check
@@ -13,14 +13,16 @@ Covers:
 import base64
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 import requests
 
 from skua.client import (
+    _extract_error_detail,
     get_session_id,
-    upload_finding,
+    upload_record,
     login,
     set_token,
     request_verification,
@@ -36,27 +38,38 @@ from skua.exceptions import UploadError
 
 @pytest.fixture
 def temp_session_dir(tmp_path):
-    """Provide a temporary directory for session file.
+    """Provide a temporary directory for the on-disk client token file.
 
-    Patches get_session_file() to use a temp directory,
-    preventing tests from touching the real ~/.skua/ directory.
+    Patches get_client_token_file() to use a temp directory and get_token()
+    to return None, preventing tests from touching ~/.skua/. Yields the
+    file path that the client code will read/write — historically named
+    `session` but now actually `client` on disk.
     """
-    session_file = tmp_path / "session"
-    with patch("skua.client.get_session_file", return_value=session_file):
-        yield session_file
+    client_file = tmp_path / "client"
+    with patch("skua.client.get_client_token_file", return_value=client_file), \
+         patch("skua.client.get_token", return_value=None):
+        yield client_file
 
 
 @pytest.fixture
 def mock_session_id():
-    """Patch get_session_id to return a predictable value."""
-    with patch("skua.client.get_session_id", return_value="anon_test123456") as mock:
+    """Patch the client-token getter to return a predictable value.
+
+    Both names are patched so callers using either the new
+    `get_client_token` or the back-compat `get_session_id` see the same
+    value (the alias path forwards to get_client_token, but tests that
+    patch only the alias would otherwise miss).
+    """
+    with patch("skua.client.get_client_token", return_value="anon_test123456"), \
+         patch("skua.client.get_session_id", return_value="anon_test123456") as mock:
         yield mock
 
 
 @pytest.fixture
 def mock_verified_session_id():
-    """Patch get_session_id to return a verified (non-anonymous) session."""
-    with patch("skua.client.get_session_id", return_value="verified_user_abc") as mock:
+    """Patch the client-token getter to return a verified value."""
+    with patch("skua.client.get_client_token", return_value="verified_user_abc"), \
+         patch("skua.client.get_session_id", return_value="verified_user_abc") as mock:
         yield mock
 
 
@@ -110,6 +123,89 @@ def sample_text_data():
 
 
 # =============================================================================
+# Tests: _extract_error_detail()
+# =============================================================================
+
+
+class TestExtractErrorDetail:
+    """Unit tests for the shared error-detail extractor."""
+
+    def _mock_response(self, status_code: int, body: Any) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def _mock_response_bad_json(self, status_code: int) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.side_effect = Exception("not json")
+        return resp
+
+    def test_skua_error_envelope(self):
+        """{"error": {"message": "..."}} returns the message."""
+        resp = self._mock_response(422, {
+            "error": {
+                "message": "Anonymous usage limit reached (10 records).",
+                "code": "ValidationError",
+                "details": {},
+            }
+        })
+        assert _extract_error_detail(resp) == "Anonymous usage limit reached (10 records)."
+
+    def test_fastapi_detail_list(self):
+        """{"detail": [{...msg...}]} joins the msg fields."""
+        resp = self._mock_response(422, {
+            "detail": [
+                {"loc": ["body", "title"], "msg": "field required", "type": "value_error"},
+                {"loc": ["body", "data"], "msg": "none is not allowed", "type": "type_error"},
+            ]
+        })
+        result = _extract_error_detail(resp)
+        assert "field required" in result
+        assert "none is not allowed" in result
+
+    def test_fastapi_detail_string(self):
+        """{"detail": "some string"} returns it directly."""
+        resp = self._mock_response(403, {"detail": "Permission denied"})
+        assert _extract_error_detail(resp) == "Permission denied"
+
+    def test_malformed_json_falls_back_to_status(self):
+        """Non-JSON body falls back to 'HTTP <status>'."""
+        resp = self._mock_response_bad_json(500)
+        assert _extract_error_detail(resp) == "HTTP 500"
+
+    def test_empty_body_falls_back_to_status(self):
+        """Empty dict body falls back to 'HTTP <status>'."""
+        resp = self._mock_response(503, {})
+        assert _extract_error_detail(resp) == "HTTP 503"
+
+    def test_non_dict_body_falls_back_to_status(self):
+        """Non-dict JSON body falls back to 'HTTP <status>'."""
+        resp = self._mock_response(500, ["error", "list"])
+        assert _extract_error_detail(resp) == "HTTP 500"
+
+    def test_error_envelope_missing_message(self):
+        """{"error": {"code": "..."}} without message falls back to status."""
+        resp = self._mock_response(500, {"error": {"code": "SomeError"}})
+        assert _extract_error_detail(resp) == "HTTP 500"
+
+    def test_detail_list_no_msg_fields(self):
+        """detail list with no msg fields falls back to status."""
+        resp = self._mock_response(422, {"detail": [{"loc": ["x"]}]})
+        assert _extract_error_detail(resp) == "HTTP 422"
+
+    def test_rate_limit_shape(self):
+        """Rate-limit shape {"error": "Rate limit exceeded", "detail": "..."} — detail string wins."""
+        resp = self._mock_response(429, {
+            "error": "Rate limit exceeded",
+            "detail": "5 per 1 minute",
+        })
+        # "error" is a plain string not a dict, so falls through to "detail"
+        assert _extract_error_detail(resp) == "5 per 1 minute"
+
+
+# =============================================================================
 # Tests: get_session_id()
 # =============================================================================
 
@@ -158,8 +254,9 @@ class TestGetSessionId:
 
     def test_creates_parent_directories(self, tmp_path):
         """Test that parent directories are created if missing."""
-        nested_path = tmp_path / "deep" / "nested" / "session"
-        with patch("skua.client.get_session_file", return_value=nested_path):
+        nested_path = tmp_path / "deep" / "nested" / "client"
+        with patch("skua.client.get_client_token_file", return_value=nested_path), \
+             patch("skua.client.get_token", return_value=None):
             session_id = get_session_id()
 
         assert nested_path.parent.exists()
@@ -199,12 +296,12 @@ class TestGetSessionId:
 
 
 # =============================================================================
-# Tests: upload_finding() - Successful Uploads
+# Tests: upload_record() - Successful Uploads
 # =============================================================================
 
 
-class TestUploadFindingSuccess:
-    """Tests for successful upload_finding() calls."""
+class TestUploadRecordSuccess:
+    """Tests for successful upload_record() calls."""
 
     def test_successful_image_upload(
         self, mock_session_id, sample_image_data, temp_session_dir
@@ -215,7 +312,7 @@ class TestUploadFindingSuccess:
             mock_post.return_value.json.return_value = {"id": "abc123", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(sample_image_data)
+            result = upload_record(sample_image_data)
 
             assert result["id"] == "abc123"
             mock_post.assert_called_once()
@@ -229,7 +326,7 @@ class TestUploadFindingSuccess:
             mock_post.return_value.json.return_value = {"id": "def456", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(sample_json_data)
+            result = upload_record(sample_json_data)
 
             assert result["id"] == "def456"
 
@@ -242,7 +339,7 @@ class TestUploadFindingSuccess:
             mock_post.return_value.json.return_value = {"id": "ghi789", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(sample_text_data)
+            result = upload_record(sample_text_data)
 
             assert result["id"] == "ghi789"
 
@@ -257,20 +354,60 @@ class TestUploadFindingSuccess:
             mock_post.return_value.json.return_value = {"id": "desc123", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(sample_text_data)
+            result = upload_record(sample_text_data)
 
             assert result["id"] == "desc123"
             call_kwargs = mock_post.call_args.kwargs
             assert "description" in call_kwargs["data"]
 
+    def test_warns_on_type_change(
+        self, mock_session_id, sample_text_data, temp_session_dir, capsys
+    ):
+        """When the backend reports the prior snap was a different type, print a warning to stderr."""
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.json.return_value = {
+                "id": "changed1",
+                "visibility": "public",
+                "creator_username": None,
+                "type_changed_from": "pandas.dataframe",
+            }
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            result = upload_record(sample_text_data)
+
+        assert result["id"] == "changed1"
+        captured = capsys.readouterr()
+        assert "pandas.dataframe" in captured.err
+        assert sample_text_data["content"]["type"] in captured.err
+
+    def test_no_warning_when_type_unchanged(
+        self, mock_session_id, sample_text_data, temp_session_dir, capsys
+    ):
+        """No warning when type_changed_from is null/missing in the response."""
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.json.return_value = {
+                "id": "same1",
+                "visibility": "public",
+                "creator_username": None,
+                "type_changed_from": None,
+            }
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            upload_record(sample_text_data)
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
 
 # =============================================================================
-# Tests: upload_finding() - Request Formatting
+# Tests: upload_record() - Request Formatting
 # =============================================================================
 
 
-class TestUploadFindingRequestFormat:
-    """Tests for correct request formatting in upload_finding()."""
+class TestUploadRecordRequestFormat:
+    """Tests for correct request formatting in upload_record()."""
 
     def test_sends_correct_headers(
         self, mock_session_id, sample_text_data, temp_session_dir
@@ -281,7 +418,7 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             assert "headers" in call_kwargs
@@ -296,7 +433,7 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             form_data = call_kwargs["data"]
@@ -315,7 +452,7 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             files = call_kwargs["files"]
@@ -335,7 +472,7 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_json_data)
+            upload_record(sample_json_data)
 
             call_kwargs = mock_post.call_args.kwargs
             files = call_kwargs["files"]
@@ -356,7 +493,7 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_image_data)
+            upload_record(sample_image_data)
 
             call_kwargs = mock_post.call_args.kwargs
             files = call_kwargs["files"]
@@ -378,10 +515,58 @@ class TestUploadFindingRequestFormat:
                 mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
                 mock_post.return_value.raise_for_status = MagicMock()
 
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
                 call_url = mock_post.call_args.args[0]
-                assert call_url == "https://api.test.com/api/findings"
+                assert call_url == "https://api.test.com/records"
+
+    def test_sends_preview_png_sidecar_when_present(
+        self, mock_session_id, temp_session_dir
+    ):
+        # When the serializer produced a preview_png_b64 (plotly with kaleido),
+        # the uploader adds a second multipart file `preview_png` so the
+        # backend can stash it for OpenGraph rendering.
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"fake-png-data"
+        plotly_data = {
+            "content": {
+                "type": "plotly.figure",
+                "format": "json",
+                "data": '{"data":[]}',
+                "metadata": {},
+                "preview_png_b64": base64.b64encode(png_bytes).decode("utf-8"),
+            },
+            "title": "Plotly with preview",
+            "tags": [],
+        }
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            upload_record(plotly_data)
+
+            files = mock_post.call_args.kwargs["files"]
+            assert "preview_png" in files
+            filename, content, content_type = files["preview_png"]
+            assert filename == "preview.png"
+            assert content == png_bytes
+            assert content_type == "image/png"
+
+    def test_omits_preview_png_sidecar_when_absent(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        # Serializers that don't produce a preview (everything except plotly,
+        # or plotly without kaleido) must not add the sidecar file at all —
+        # the backend endpoint treats it as optional.
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            upload_record(sample_text_data)
+
+            files = mock_post.call_args.kwargs["files"]
+            assert "preview_png" not in files
 
     def test_request_timeout_is_set(
         self, mock_session_id, sample_text_data, temp_session_dir
@@ -392,7 +577,7 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             assert call_kwargs["timeout"] == 30
@@ -400,7 +585,7 @@ class TestUploadFindingRequestFormat:
     def test_visibility_included_when_set(
         self, mock_session_id, sample_text_data, temp_session_dir
     ):
-        """Test that visibility is included in form data when provided."""
+        """Visibility is included in form data when provided — anon or verified."""
         sample_text_data["visibility"] = "private"
 
         with patch("skua.client.requests.post") as mock_post:
@@ -408,12 +593,148 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "private", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             form_data = call_kwargs["data"]
             assert "visibility" in form_data
             assert form_data["visibility"] == (None, "private")
+
+    def test_anon_can_upload_private(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """Client no longer rejects anon + private — backend handles cookie-gating."""
+        sample_text_data["visibility"] = "private"
+
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 201
+            mock_post.return_value.json.return_value = {"id": "test", "visibility": "private", "creator_username": None}
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            result = upload_record(sample_text_data)
+
+        assert mock_post.call_count == 1
+        assert result["visibility"] == "private"
+
+    def test_anon_can_upload_unlisted(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """Client no longer rejects anon + unlisted — backend handles cookie-gating."""
+        sample_text_data["visibility"] = "unlisted"
+
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 201
+            mock_post.return_value.json.return_value = {"id": "test", "visibility": "unlisted", "creator_username": None}
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            result = upload_record(sample_text_data)
+
+        assert mock_post.call_count == 1
+        assert result["visibility"] == "unlisted"
+
+    def test_upload_sends_collection_name_in_form(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """upload_record sends collection_name to the backend, not session_name."""
+        sample_text_data["collection_name"] = "Q3 Review"
+
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 201
+            mock_post.return_value.json.return_value = {
+                "id": "abc123",
+                "creator_username": "testbird-42",
+                "visibility": "public",
+                "collection_id": "coll1",
+                "collection_name": "Q3 Review",
+                "collection_url": "http://localhost:5173/u/testbird-42/c/q3-review",
+            }
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            result = upload_record(sample_text_data)
+
+            call_kwargs = mock_post.call_args.kwargs
+            form_data = call_kwargs["data"]
+            assert "collection_name" in form_data
+            assert form_data["collection_name"] == (None, "Q3 Review")
+            assert "session_name" not in form_data
+
+        assert result["id"] == "abc123"
+        assert result["collection_name"] == "Q3 Review"
+        assert result["collection_id"] == "coll1"
+        assert result["collection_url"] == "http://localhost:5173/u/testbird-42/c/q3-review"
+
+    def test_upload_omits_collection_name_when_not_in_data(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """When the data dict has no collection_name, the form body must not contain it."""
+        # sample_text_data has no collection_name key
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 201
+            mock_post.return_value.json.return_value = {"id": "abc123", "creator_username": None, "visibility": "public"}
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            upload_record(sample_text_data)
+
+            call_kwargs = mock_post.call_args.kwargs
+            form_data = call_kwargs["data"]
+            assert "collection_name" not in form_data
+            assert "session_name" not in form_data
+
+    def test_upload_returns_collection_fields_from_response(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """upload_record surfaces collection_id, collection_name, collection_url."""
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 201
+            mock_post.return_value.json.return_value = {
+                "id": "xyz789",
+                "creator_username": "alice",
+                "visibility": "public",
+                "collection_id": "collA",
+                "collection_name": "My Notebook",
+                "collection_url": "http://localhost:5173/u/alice/c/my-notebook",
+            }
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            result = upload_record(sample_text_data)
+
+        assert result["collection_id"] == "collA"
+        assert result["collection_name"] == "My Notebook"
+        assert result["collection_url"] == "http://localhost:5173/u/alice/c/my-notebook"
+
+    def test_upload_returns_none_collection_fields_when_absent(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """When server doesn't return collection fields, they are None in result."""
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 201
+            mock_post.return_value.json.return_value = {
+                "id": "xyz789",
+                "creator_username": None,
+                "visibility": "public",
+            }
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            result = upload_record(sample_text_data)
+
+        assert result["collection_id"] is None
+        assert result["collection_name"] is None
+        assert result["collection_url"] is None
+
+    def test_unlisted_allowed_for_any_session(
+        self, mock_verified_session_id, sample_text_data, temp_session_dir
+    ):
+        """Verified session + visibility=unlisted passes through to the server."""
+        sample_text_data["visibility"] = "unlisted"
+
+        with patch("skua.client.requests.post") as mock_post:
+            mock_post.return_value.status_code = 201
+            mock_post.return_value.json.return_value = {"id": "test", "visibility": "unlisted", "creator_username": None}
+            mock_post.return_value.raise_for_status = MagicMock()
+
+            upload_record(sample_text_data)
+
+            assert mock_post.call_count == 1
 
     def test_visibility_excluded_when_none(
         self, mock_session_id, sample_text_data, temp_session_dir
@@ -426,7 +747,7 @@ class TestUploadFindingRequestFormat:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             form_data = call_kwargs["data"]
@@ -434,11 +755,11 @@ class TestUploadFindingRequestFormat:
 
 
 # =============================================================================
-# Tests: upload_finding() - File Size Validation
+# Tests: upload_record() - File Size Validation
 # =============================================================================
 
 
-class TestUploadFindingFileSizeValidation:
+class TestUploadRecordFileSizeValidation:
     """Tests for client-side file size validation."""
 
     def test_file_under_limit_allowed(
@@ -451,7 +772,7 @@ class TestUploadFindingFileSizeValidation:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(sample_text_data)
+            result = upload_record(sample_text_data)
 
             assert result["id"] == "test"
 
@@ -473,7 +794,7 @@ class TestUploadFindingFileSizeValidation:
 
         with patch("skua.client.requests.post") as mock_post:
             with pytest.raises(UploadError) as exc_info:
-                upload_finding(large_data)
+                upload_record(large_data)
 
             # Verify error message
             assert "too large" in str(exc_info.value).lower()
@@ -504,19 +825,19 @@ class TestUploadFindingFileSizeValidation:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(exact_data)
+            result = upload_record(exact_data)
 
             assert result["id"] == "test"
             mock_post.assert_called_once()
 
 
 # =============================================================================
-# Tests: upload_finding() - HTTP Error Handling
+# Tests: upload_record() - HTTP Error Handling
 # =============================================================================
 
 
-class TestUploadFindingHttpErrors:
-    """Tests for HTTP error handling in upload_finding()."""
+class TestUploadRecordHttpErrors:
+    """Tests for HTTP error handling in upload_record()."""
 
     @pytest.mark.parametrize(
         "status_code,expected_in_message",
@@ -551,19 +872,19 @@ class TestUploadFindingHttpErrors:
             mock_post.return_value.raise_for_status.side_effect = http_error
 
             with pytest.raises(UploadError) as exc_info:
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
             assert "Failed to upload" in str(exc_info.value)
             assert expected_in_message in str(exc_info.value)
 
 
 # =============================================================================
-# Tests: upload_finding() - Network Error Handling
+# Tests: upload_record() - Network Error Handling
 # =============================================================================
 
 
-class TestUploadFindingNetworkErrors:
-    """Tests for network error handling in upload_finding()."""
+class TestUploadRecordNetworkErrors:
+    """Tests for network error handling in upload_record()."""
 
     def test_connection_refused_error(
         self, mock_session_id, sample_text_data, temp_session_dir
@@ -575,7 +896,7 @@ class TestUploadFindingNetworkErrors:
             )
 
             with pytest.raises(UploadError) as exc_info:
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
             assert "Failed to upload" in str(exc_info.value)
 
@@ -587,7 +908,7 @@ class TestUploadFindingNetworkErrors:
             mock_post.side_effect = requests.exceptions.Timeout("Request timed out")
 
             with pytest.raises(UploadError) as exc_info:
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
             assert "Failed to upload" in str(exc_info.value)
 
@@ -601,7 +922,7 @@ class TestUploadFindingNetworkErrors:
             )
 
             with pytest.raises(UploadError) as exc_info:
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
             assert "Failed to upload" in str(exc_info.value)
 
@@ -613,7 +934,7 @@ class TestUploadFindingNetworkErrors:
             mock_post.side_effect = requests.exceptions.SSLError("SSL certificate error")
 
             with pytest.raises(UploadError) as exc_info:
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
             assert "Failed to upload" in str(exc_info.value)
 
@@ -627,18 +948,18 @@ class TestUploadFindingNetworkErrors:
             )
 
             with pytest.raises(UploadError) as exc_info:
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
             assert "Failed to upload" in str(exc_info.value)
 
 
 # =============================================================================
-# Tests: upload_finding() - Edge Cases
+# Tests: upload_record() - Edge Cases
 # =============================================================================
 
 
-class TestUploadFindingEdgeCases:
-    """Tests for edge cases in upload_finding()."""
+class TestUploadRecordEdgeCases:
+    """Tests for edge cases in upload_record()."""
 
     def test_empty_title(
         self, mock_session_id, temp_session_dir
@@ -660,7 +981,7 @@ class TestUploadFindingEdgeCases:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(data)
+            result = upload_record(data)
 
             assert result["id"] == "test"
 
@@ -675,27 +996,29 @@ class TestUploadFindingEdgeCases:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             form_data = call_kwargs["data"]
             assert form_data["tags"] == (None, "[]")
 
-    def test_tags_always_empty(
+    def test_tags_passed_through_to_form_data(
         self, mock_session_id, sample_text_data, temp_session_dir
     ):
-        """Test that tags are always sent as empty list (not yet exposed)."""
+        """Test that tags from data dict are sent as JSON in form data."""
+        sample_text_data["tags"] = ["ml", "analysis"]
+
         with patch("skua.client.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(sample_text_data)
+            upload_record(sample_text_data)
 
             call_kwargs = mock_post.call_args.kwargs
             form_data = call_kwargs["data"]
             parsed_tags = json.loads(form_data["tags"][1])
-            assert parsed_tags == []
+            assert parsed_tags == ["ml", "analysis"]
 
     def test_special_characters_in_title(
         self, mock_session_id, temp_session_dir
@@ -717,7 +1040,7 @@ class TestUploadFindingEdgeCases:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(data)
+            upload_record(data)
 
             call_kwargs = mock_post.call_args.kwargs
             form_data = call_kwargs["data"]
@@ -746,7 +1069,7 @@ class TestUploadFindingEdgeCases:
             mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
             mock_post.return_value.raise_for_status = MagicMock()
 
-            upload_finding(data)
+            upload_record(data)
 
             call_kwargs = mock_post.call_args.kwargs
             files = call_kwargs["files"]
@@ -761,44 +1084,128 @@ class TestUploadFindingEdgeCases:
 
 
 class TestLogin:
-    """Tests for login() function."""
+    """Tests for login() function (browser-based flow)."""
 
-    def test_returns_verification_url(self, mock_session_id, temp_session_dir):
-        """Test that verification URL is returned."""
-        with patch("skua.client.get_web_url", return_value="https://skua.dev"):
-            with patch("webbrowser.open"):
-                url = login()
+    def test_opens_verify_url_in_browser_with_session(self, mock_session_id, temp_session_dir, tmp_path):
+        """login() opens {web_url}/verify?client=<token> in the browser when not already verified."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"), \
+             patch("skua.client.get_web_url", return_value="https://skua.dev"), \
+             patch("webbrowser.open") as mock_open, \
+             patch("skua.client.requests.get") as mock_get, \
+             patch("time.sleep"), \
+             patch("pathlib.Path.home", return_value=tmp_path):
+            mock_get.return_value.ok = True
+            # First call is the fast-path pre-check (unauthenticated → fall through),
+            # then polling picks up the verification.
+            mock_get.return_value.json.side_effect = [
+                {"authenticated": False},
+                {
+                    "authenticated": True,
+                    "email": "user@example.com",
+                    "retention_days": 90,
+                },
+            ]
+            login(timeout=5)
 
-        assert url == "https://skua.dev/verify"
+        mock_open.assert_called_once()
+        opened_url = mock_open.call_args.args[0]
+        assert opened_url.startswith("https://skua.dev/verify?client=")
+        assert "anon_test123456" in opened_url
 
-    def test_opens_browser(self, mock_session_id, temp_session_dir):
-        """Test that browser is opened with correct URL."""
-        with patch("skua.client.get_web_url", return_value="https://skua.dev"):
-            with patch("webbrowser.open") as mock_open:
-                login()
-
-        mock_open.assert_called_once_with("https://skua.dev/verify")
-
-    def test_handles_browser_open_failure(self, mock_session_id, temp_session_dir):
-        """Test that browser failure doesn't raise exception."""
-        with patch("skua.client.get_web_url", return_value="https://skua.dev"):
-            with patch("webbrowser.open") as mock_open:
-                mock_open.side_effect = Exception("No browser found")
-                url = login()
-
-        assert "verify" in url
-
-    def test_prints_helpful_messages(
-        self, mock_session_id, temp_session_dir, capsys
+    def test_fast_path_skips_browser_if_already_verified(
+        self, mock_session_id, temp_session_dir, tmp_path, capsys
     ):
-        """Test that helpful messages are printed."""
-        with patch("skua.client.get_web_url", return_value="https://skua.dev"):
-            with patch("webbrowser.open"):
-                login()
+        """If session is already verified (late-click recovery), skip browser + polling."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"), \
+             patch("skua.client.get_web_url", return_value="https://skua.dev"), \
+             patch("webbrowser.open") as mock_open, \
+             patch("skua.client.requests.get") as mock_get, \
+             patch("time.sleep") as mock_sleep, \
+             patch("pathlib.Path.home", return_value=tmp_path):
+            mock_get.return_value.ok = True
+            mock_get.return_value.json.return_value = {
+                "authenticated": True,
+                "email": "user@example.com",
+                "retention_days": 90,
+            }
+            login(timeout=5)
+
+        mock_open.assert_not_called()
+        mock_sleep.assert_not_called()
+        # Token persisted to the canonical client file (was ~/.skua/token
+        # historically; now ~/.skua/client — see get_client_token()).
+        assert temp_session_dir.read_text() == "anon_test123456"
+        assert "Verified as user@example.com" in capsys.readouterr().out
+
+    def test_polls_until_authenticated(self, mock_session_id, temp_session_dir, tmp_path):
+        """login() polls /auth/status until authenticated."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"), \
+             patch("skua.client.get_web_url", return_value="https://skua.dev"), \
+             patch("webbrowser.open"), \
+             patch("skua.client.requests.get") as mock_get, \
+             patch("time.sleep"), \
+             patch("pathlib.Path.home", return_value=tmp_path):
+            mock_get.return_value.ok = True
+            mock_get.return_value.json.side_effect = [
+                {"authenticated": False},
+                {"authenticated": False},
+                {"authenticated": True, "email": "user@example.com", "retention_days": 90},
+            ]
+            login(timeout=30)
+
+        assert mock_get.call_count == 3
+
+    def test_persists_token_on_success(self, mock_session_id, temp_session_dir, tmp_path):
+        """On successful verification, the client token is persisted to ~/.skua/client."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"), \
+             patch("skua.client.get_web_url", return_value="https://skua.dev"), \
+             patch("webbrowser.open"), \
+             patch("skua.client.requests.get") as mock_get, \
+             patch("time.sleep"), \
+             patch("pathlib.Path.home", return_value=tmp_path):
+            mock_get.return_value.ok = True
+            mock_get.return_value.json.return_value = {
+                "authenticated": True,
+                "email": "user@example.com",
+                "retention_days": 90,
+            }
+            login(timeout=5)
+
+        assert temp_session_dir.exists()
+        assert temp_session_dir.read_text() == "anon_test123456"
+
+    def test_timeout_prints_paste_instructions(self, mock_session_id, temp_session_dir, tmp_path, capsys):
+        """If polling times out, login() tells the user they can still paste skua.token()."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"), \
+             patch("skua.client.get_web_url", return_value="https://skua.dev"), \
+             patch("webbrowser.open"), \
+             patch("skua.client.requests.get") as mock_get, \
+             patch("time.sleep"), \
+             patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("time.time", side_effect=[0, 1000, 2000]):
+            mock_get.return_value.ok = True
+            mock_get.return_value.json.return_value = {"authenticated": False}
+            login(timeout=5)
 
         captured = capsys.readouterr()
-        assert "Opening browser" in captured.out
-        assert "verify" in captured.out.lower()
+        assert "Timed out" in captured.out
+        assert "skua.token" in captured.out
+
+    def test_browser_open_failure_does_not_crash(self, mock_session_id, temp_session_dir, tmp_path):
+        """If webbrowser.open() raises, login still proceeds to polling."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"), \
+             patch("skua.client.get_web_url", return_value="https://skua.dev"), \
+             patch("webbrowser.open", side_effect=RuntimeError("no display")), \
+             patch("skua.client.requests.get") as mock_get, \
+             patch("time.sleep"), \
+             patch("pathlib.Path.home", return_value=tmp_path):
+            mock_get.return_value.ok = True
+            mock_get.return_value.json.return_value = {
+                "authenticated": True,
+                "email": "user@example.com",
+                "retention_days": 90,
+            }
+            login(timeout=5)  # should not raise
 
     def test_backward_compat_alias(self):
         """Test that request_verification is an alias for login."""
@@ -809,10 +1216,9 @@ class TestSetToken:
     """Tests for set_token() function."""
 
     def test_successful_activation(self, mock_session_id, temp_session_dir, tmp_path):
-        """Test successful token activation persists token."""
-        token_file = tmp_path / ".skua" / "token"
-
-        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
+        """Test successful token activation persists token to client file."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"), \
+             patch("skua.client.get_web_url", return_value="https://skua.dev"):
             with patch("skua.client.requests.post") as mock_post:
                 mock_post.return_value.status_code = 200
                 mock_post.return_value.ok = True
@@ -832,9 +1238,10 @@ class TestSetToken:
         assert call_kwargs["json"]["token"] == "sk_test123"
         assert call_kwargs["headers"]["X-Skua-Token"] == "anon_test123456"
 
-        # Verify token was persisted
-        assert token_file.exists()
-        assert token_file.read_text() == "sk_test123"
+        # Token is now persisted to the canonical client file (was
+        # ~/.skua/token historically; now the same file we read from).
+        assert temp_session_dir.exists()
+        assert temp_session_dir.read_text() == "sk_test123"
 
     def test_rejects_token_without_sk_prefix(self, mock_session_id, temp_session_dir):
         """Test that tokens without sk_ prefix are rejected."""
@@ -854,8 +1261,8 @@ class TestSetToken:
         with pytest.raises(ValidationError, match="too short"):
             set_token("sk_")
 
-    def test_activation_failure_raises(self, mock_session_id, temp_session_dir):
-        """Test that activation failure raises UploadError."""
+    def test_activation_failure_raises_with_detail(self, mock_session_id, temp_session_dir):
+        """HTTP error with FastAPI detail string surfaces the message."""
         with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
             with patch("skua.client.requests.post") as mock_post:
                 response = MagicMock()
@@ -866,8 +1273,34 @@ class TestSetToken:
                 mock_post.return_value = response
                 response.raise_for_status.side_effect = http_error
 
-                with pytest.raises(UploadError, match="Token activation failed"):
+                with pytest.raises(UploadError, match="Invalid token"):
                     set_token("sk_bad_token")
+
+    def test_activation_failure_raises_with_error_envelope(self, mock_session_id, temp_session_dir):
+        """HTTP error with SkuaError envelope surfaces the message."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
+            with patch("skua.client.requests.post") as mock_post:
+                response = MagicMock()
+                response.status_code = 422
+                response.ok = False
+                response.json.return_value = {
+                    "error": {"message": "Token already used", "code": "ValidationError", "details": {}}
+                }
+                http_error = requests.exceptions.HTTPError("422", response=response)
+                mock_post.return_value = response
+                response.raise_for_status.side_effect = http_error
+
+                with pytest.raises(UploadError, match="Token already used"):
+                    set_token("sk_used_token")
+
+    def test_activation_network_error_raises(self, mock_session_id, temp_session_dir):
+        """Network error (no response body) raises UploadError with message."""
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
+            with patch("skua.client.requests.post") as mock_post:
+                mock_post.side_effect = requests.exceptions.ConnectionError("No route to host")
+
+                with pytest.raises(UploadError, match="Token activation failed"):
+                    set_token("sk_test_net")
 
     def test_prints_success_message(self, mock_session_id, temp_session_dir, tmp_path, capsys):
         """Test that success message is printed."""
@@ -899,23 +1332,78 @@ class TestGetAuthStatus:
     """Tests for get_auth_status() function."""
 
     def test_returns_auth_status(self, mock_session_id, temp_session_dir):
-        """Test that authentication status is returned."""
-        expected_response = {
+        """Test that authentication status returns the redesigned payload."""
+        backend_response = {
+            "verified": False,
             "authenticated": False,
             "email": None,
-            "session_id": "anon_test123456",
-            "retention_days": 7,
+            "username": "brave-otter-42",
+            "retention_days": 90,
         }
 
         with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
             with patch("skua.client.requests.get") as mock_get:
                 mock_get.return_value.status_code = 200
-                mock_get.return_value.json.return_value = expected_response
+                mock_get.return_value.json.return_value = backend_response
                 mock_get.return_value.raise_for_status = MagicMock()
 
                 result = get_auth_status()
 
-        assert result == expected_response
+        # Public SDK shape — no internal ids
+        assert "session_id" not in result
+        assert "client_id" not in result
+        assert "user_id" not in result
+        assert "authenticated" not in result
+        # session_name / session_default_visibility were removed in the
+        # collection API upgrade — session.py is no longer referenced here
+        assert "session_name" not in result
+        assert "session_default_visibility" not in result
+        # Positive assertions on the redesigned shape
+        assert result["verified"] is False
+        assert result["email"] is None
+        assert result["username"] == "brave-otter-42"
+        assert result["retention_days"] == 90
+
+    def test_verified_shape(self, mock_session_id, temp_session_dir):
+        """Verified flag flows through correctly when backend reports verified."""
+        backend_response = {
+            "verified": True,
+            "authenticated": True,
+            "email": "alice@example.com",
+            "username": "alice",
+            "retention_days": 365,
+        }
+
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
+            with patch("skua.client.requests.get") as mock_get:
+                mock_get.return_value.status_code = 200
+                mock_get.return_value.json.return_value = backend_response
+                mock_get.return_value.raise_for_status = MagicMock()
+
+                result = get_auth_status()
+
+        assert result["verified"] is True
+        assert result["username"] == "alice"
+        assert result["email"] == "alice@example.com"
+
+    def test_legacy_backend_falls_back_to_authenticated(self, mock_session_id, temp_session_dir):
+        """If the backend is old and only returns `authenticated`, SDK still exposes `verified`."""
+        backend_response = {
+            "authenticated": True,
+            "email": "bob@example.com",
+            "username": "bob",
+            "retention_days": 365,
+        }
+
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
+            with patch("skua.client.requests.get") as mock_get:
+                mock_get.return_value.status_code = 200
+                mock_get.return_value.json.return_value = backend_response
+                mock_get.return_value.raise_for_status = MagicMock()
+
+                result = get_auth_status()
+
+        assert result["verified"] is True
 
     def test_sends_correct_headers(self, mock_session_id, temp_session_dir):
         """Test that correct headers are sent."""
@@ -941,7 +1429,7 @@ class TestGetAuthStatus:
                 get_auth_status()
 
         call_url = mock_get.call_args.args[0]
-        assert call_url == "https://api.test.com/api/auth/status"
+        assert call_url == "https://api.test.com/auth/status"
 
     def test_handles_network_error(self, mock_session_id, temp_session_dir):
         """Test that network errors raise UploadError."""
@@ -970,6 +1458,31 @@ class TestGetAuthStatus:
 
         assert "Failed to get authentication status" in str(exc_info.value)
 
+    def test_works_without_init(self, mock_session_id, temp_session_dir):
+        """status() is a read-only check and must work before skua.init().
+
+        get_auth_status() no longer imports from skua.session, so there's
+        no ConfigurationError risk from calling status() on a fresh kernel.
+        """
+        with patch("skua.client.get_api_url", return_value="https://api.skua.dev"):
+            with patch("skua.client.requests.get") as mock_get:
+                mock_get.return_value.status_code = 200
+                mock_get.return_value.json.return_value = {
+                    "verified": False,
+                    "authenticated": False,
+                    "email": None,
+                    "username": "brave-otter-42",
+                    "retention_days": 90,
+                }
+                mock_get.return_value.raise_for_status = MagicMock()
+
+                result = get_auth_status()
+
+        assert result["verified"] is False
+        assert result["username"] == "brave-otter-42"
+        assert "session_name" not in result
+        assert "session_default_visibility" not in result
+
 
 # =============================================================================
 # Tests: URL Construction
@@ -982,9 +1495,9 @@ class TestUrlConstruction:
     @pytest.mark.parametrize(
         "api_url,expected_endpoint",
         [
-            ("https://api.skua.dev", "https://api.skua.dev/api/findings"),
-            ("http://localhost:8000", "http://localhost:8000/api/findings"),
-            ("https://api.staging.skua.dev", "https://api.staging.skua.dev/api/findings"),
+            ("https://api.skua.dev", "https://api.skua.dev/records"),
+            ("http://localhost:8000", "http://localhost:8000/records"),
+            ("https://api.staging.skua.dev", "https://api.staging.skua.dev/records"),
             # Trailing slash should not cause double slashes
             # Note: Current implementation doesn't handle trailing slashes
         ],
@@ -1004,7 +1517,7 @@ class TestUrlConstruction:
                 mock_post.return_value.json.return_value = {"id": "test", "visibility": "public", "creator_username": None}
                 mock_post.return_value.raise_for_status = MagicMock()
 
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
                 call_url = mock_post.call_args.args[0]
                 assert call_url == expected_endpoint
@@ -1021,19 +1534,19 @@ class TestResponseParsing:
     def test_extracts_id_from_response(
         self, mock_session_id, sample_text_data, temp_session_dir
     ):
-        """Test that finding ID is correctly extracted from response."""
+        """Test that record ID is correctly extracted from response."""
         with patch("skua.client.requests.post") as mock_post:
             mock_post.return_value.status_code = 200
             mock_post.return_value.json.return_value = {
-                "id": "unique-finding-id-123",
-                "url": "https://skua.dev/f/unique-finding-id-123",
+                "id": "unique-record-id-123",
+                "url": "https://skua.dev/f/unique-record-id-123",
                 "extra_field": "ignored",
             }
             mock_post.return_value.raise_for_status = MagicMock()
 
-            result = upload_finding(sample_text_data)
+            result = upload_record(sample_text_data)
 
-            assert result["id"] == "unique-finding-id-123"
+            assert result["id"] == "unique-record-id-123"
 
     def test_handles_json_decode_error(
         self, mock_session_id, sample_text_data, temp_session_dir
@@ -1047,7 +1560,7 @@ class TestResponseParsing:
             mock_post.return_value.raise_for_status = MagicMock()
 
             with pytest.raises(json.JSONDecodeError):
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
 
     def test_handles_missing_id_in_response(
         self, mock_session_id, sample_text_data, temp_session_dir
@@ -1059,4 +1572,44 @@ class TestResponseParsing:
             mock_post.return_value.raise_for_status = MagicMock()
 
             with pytest.raises(KeyError):
-                upload_finding(sample_text_data)
+                upload_record(sample_text_data)
+
+    def test_extracts_message_from_error_envelope(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """Backend wraps SkuaError in {"error": {"message": ...}}; the SDK should surface the message."""
+        import requests as _requests
+        with patch("skua.client.requests.post") as mock_post:
+            err_response = MagicMock()
+            err_response.status_code = 422
+            err_response.json.return_value = {
+                "error": {
+                    "message": "Anonymous usage limit reached (10 records). Verify your email to upload more.",
+                    "code": "ValidationError",
+                    "details": {},
+                }
+            }
+            err = _requests.exceptions.HTTPError(response=err_response)
+            mock_post.return_value.raise_for_status.side_effect = err
+            mock_post.return_value = mock_post.return_value
+
+            with pytest.raises(UploadError, match="Anonymous usage limit reached"):
+                upload_record(sample_text_data)
+
+    def test_extracts_detail_from_fastapi_validation_error(
+        self, mock_session_id, sample_text_data, temp_session_dir
+    ):
+        """FastAPI's auto-422 has shape {"detail": [...]}; the SDK should still surface it."""
+        import requests as _requests
+        with patch("skua.client.requests.post") as mock_post:
+            err_response = MagicMock()
+            err_response.status_code = 422
+            err_response.json.return_value = {
+                "detail": [{"loc": ["body", "title"], "msg": "field required", "type": "value_error"}]
+            }
+            err = _requests.exceptions.HTTPError(response=err_response)
+            mock_post.return_value.raise_for_status.side_effect = err
+
+            # The detail is a list; the SDK passes it through to the error message.
+            with pytest.raises(UploadError, match="field required"):
+                upload_record(sample_text_data)

@@ -3,7 +3,7 @@
 These tests serve multiple purposes:
 1. Test that Skua's core capture functionality works
 2. Provide documentation examples
-3. Seed the demo account with sample findings
+3. Seed the demo account with sample records
 4. Generate marketing content
 
 NOTE: These tests require the backend to be running on localhost:8000.
@@ -13,7 +13,7 @@ They will be skipped if the backend is not available.
 
 import pytest
 import requests
-from skua.testing import docs_example, demo_finding, marketing_snippet
+from skua.testing import docs_example, demo_record, marketing_snippet
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -33,7 +33,7 @@ def check_backend_available():
     category="getting-started",
     order=10
 )
-@demo_finding(
+@demo_record(
     name="trig-functions",
     title="Trigonometric Functions",
     featured=True
@@ -72,7 +72,7 @@ def test_capture_matplotlib_basic():
 
     # Verify it worked
     assert result.url is not None
-    assert "skua.dev/f/" in result.url or "localhost:5173/f/" in result.url
+    assert "skua.dev/r/" in result.url or "localhost:5173/r/" in result.url
 
 
 @docs_example(
@@ -81,7 +81,7 @@ def test_capture_matplotlib_basic():
     category="getting-started",
     order=20
 )
-@demo_finding(
+@demo_record(
     name="employee-data",
     title="Employee Dataset Example"
 )
@@ -125,7 +125,7 @@ def test_capture_text():
     # Your analysis summary
     summary = """# Q3 Analysis Summary
 
-    Key Findings:
+    Key Records:
     - Revenue up 15% vs Q2
     - Customer acquisition cost down 8%
     - Churn rate improved to 2.1%

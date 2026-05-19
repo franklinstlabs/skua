@@ -1,14 +1,16 @@
 [project]
 name = "getskua"
-version = "0.1.1"
-description = "Record and share Jupyter notebook findings via shareable links"
+dynamic = ["version"]
+description = "Shareable URLs for notebook outputs — record any chart, DataFrame, or figure into a live link"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
 authors = [{name = "Franklin Street Labs"}]
-keywords = ["jupyter", "notebook", "sharing", "visualization", "data-science"]
+keywords = ["jupyter", "notebook", "sharing", "visualization", "data-science", "matplotlib", "plotly", "pandas", "record", "collaboration", "cli", "share"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Jupyter",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -21,23 +23,44 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 dependencies = [
-    "requests>=2.31.0",
+    # No lower bounds: `getskua` uses decade-stable subsets of both libs
+    # (requests.post/get/json/headers/timeout/raise_for_status; click group
+    # + command + argument + option decorators). Pinning tighter would
+    # invite conflicts with whatever the user already has in their env,
+    # and someone's `requirements.txt` adding `getskua` should never fight
+    # their existing `requests==x.y.z`. The `requires-python = ">=3.8"`
+    # cap on the project already excludes genuinely ancient versions of
+    # these libs from being installable.
+    "requests",
+    "click",
 ]
 
+[project.scripts]
+skua = "skua.cli:main"
+
 [project.optional-dependencies]
+# `plotly` extra — installs kaleido so skua.record(plotly_fig) can render a
+# static PNG preview alongside the JSON. Without it, plotly records still
+# upload fine, they just don't get an OpenGraph preview image. Kept separate
+# from the core deps because kaleido ships a bundled chromium-mini (~10 MB)
+# that most non-plotly users don't need.
+plotly = [
+    "kaleido>=0.2.1",
+]
 dev = [
     "pytest>=7.4.3",
     "pytest-xdist>=3.5.0",
     "black>=23.12.0",
     "ruff>=0.1.8",
     "mypy>=1.7.1",
-    "types-requests>=2.31.0",
+    "types-requests",
     "matplotlib>=3.7.0",
     "pandas>=2.0.0",
     "pillow>=10.0.0",
     "plotly>=5.0.0",
     "polars>=0.20.0",
     "pyarrow>=14.0.0",
+    "kaleido>=0.2.1",
 ]
 
 [project.urls]
@@ -85,10 +108,25 @@ markers = [
     "integration: marks tests as integration tests requiring backend",
 ]
 
-[tool.uv.build-backend]
-module-name = "skua"
-module-root = ""
-
 [build-system]
-requires = ["uv_build>=0.7.19,<0.8.0"]
-build-backend = "uv_build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Single source of truth for the package version: the literal in
+# `skua/__init__.py`. pyproject.toml declares `dynamic = ["version"]`
+# above and hatchling reads the value from that file at build time, so
+# bumps happen in exactly one place. Keeping the literal (rather than
+# reading via importlib.metadata at runtime) matters for editable
+# installs that overlay source on top of a PyPI-installed version —
+# `skua.__version__` should reflect the source, not the pre-install.
+[tool.hatch.version]
+path = "skua/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["skua"]
+
+[dependency-groups]
+dev = [
+    "pytest-xdist>=3.6.1",
+    "python-dotenv>=1.0.1",
+]

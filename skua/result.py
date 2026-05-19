@@ -1,4 +1,4 @@
-"""RecordResult class for rich return values from skua.record()."""
+"""RecordResult — rich result object returned by skua.record(). SnapResult kept as alias."""
 
 from __future__ import annotations
 
@@ -6,20 +6,20 @@ from typing import Any, Dict
 
 
 class RecordResult:
-    """Rich result object returned by skua.record().
+    """Rich result object returned by skua.record() (exported as `Record`).
 
-    This object wraps the original object and provides access to the URL
-    and metadata while maintaining transparent notebook display behavior.
+    Wraps the original object and provides access to the URL and metadata
+    while maintaining transparent notebook display behavior.
 
     Attributes:
-        url: The shareable URL for the finding
-        metadata: Metadata about the finding (ID, title, tags, etc.)
+        url: The shareable URL for the record
+        metadata: Metadata about the record (ID, title, tags, etc.)
 
     Examples:
         >>> result = skua.record(fig, title="My Plot")
-        ✓ Recorded: https://skua.dev/f/abc123
+        ✓ swift-gannet-4291 · My Plot → https://skua.dev/r/abc123
         >>> result.url
-        'https://skua.dev/f/abc123'
+        'https://skua.dev/r/abc123'
         >>> result.metadata
         {'id': 'abc123', 'title': 'My Plot', 'tags': []}
         >>> result  # In notebooks, displays the original figure
@@ -27,12 +27,12 @@ class RecordResult:
     """
 
     def __init__(self, obj: Any, url: str, metadata: Dict[str, Any]):
-        """Initialize a RecordResult.
+        """Initialize a Record.
 
         Args:
             obj: The original object that was recorded
-            url: The shareable URL for the finding
-            metadata: Metadata about the finding
+            url: The shareable URL for the record
+            metadata: Metadata about the record
         """
         self._obj = obj
         self.url = url
@@ -42,7 +42,7 @@ class RecordResult:
         """Return string representation.
 
         In notebooks, this displays the original object's representation,
-        making RecordResult transparent to the user.
+        making the RecordResult transparent to the user.
         """
         return repr(self._obj)
 
@@ -99,6 +99,38 @@ class RecordResult:
             return self._obj._repr_markdown_()
         return None
 
+    def _ipython_display_(self) -> None:
+        """Render in Jupyter exactly as the wrapped object would.
+
+        Why this exists: matplotlib `Figure` doesn't expose `_repr_png_` /
+        `_repr_html_` directly — the inline rendering you see in notebooks
+        comes from IPython's per-type formatter registry (matplotlib registers
+        a hook that calls `print_figure` whenever IPython encounters a
+        Figure). The individual `_repr_*_` methods on this class can't reach
+        that registry; they ask `hasattr(fig, "_repr_png_")` which is False
+        and return None, so wrapping a figure in RecordResult would silently
+        fall back to the plain-text repr and the chart wouldn't appear inline.
+
+        `_ipython_display_` takes precedence over every `_repr_*_` method when
+        defined, and lets us hand the wrapped object straight to IPython's
+        display() — which exercises the full formatter pipeline (matplotlib
+        hook, plotly mimebundle, pandas HTML, PIL image, etc.). Net effect:
+        `record(fig)` as the last cell line displays the figure inline,
+        matching what `fig` alone would do.
+
+        The share URL is already printed to stdout by `record()` itself, so
+        we deliberately don't re-display it here — the cell output stays
+        visually identical to the bare-object case.
+        """
+        try:
+            from IPython.display import display
+        except ImportError:
+            # Not in IPython — IPython isn't going to call this method
+            # anyway. Defensive only; the standard `_repr_*_` fallbacks
+            # above handle non-IPython renderers.
+            return
+        display(self._obj)
+
     # Make RecordResult behave like the wrapped object for common operations
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the wrapped object.
@@ -107,7 +139,7 @@ class RecordResult:
         directly on the RecordResult.
 
         Example:
-            >>> df_result = skua.record(df)
+            >>> df_result = skua.record(df, title="Test")
             >>> df_result.head()  # Calls df.head()
         """
         return getattr(self._obj, name)
@@ -118,7 +150,7 @@ class RecordResult:
         This allows indexing operations on the RecordResult.
 
         Example:
-            >>> df_result = skua.record(df)
+            >>> df_result = skua.record(df, title="Test")
             >>> df_result['column_name']  # Works like df['column_name']
         """
         return self._obj[key]
@@ -212,3 +244,9 @@ class RecordResult:
         if isinstance(other, RecordResult):
             return self._obj ** other._obj
         return self._obj ** other
+
+
+# Silent back-compat alias — the class was named SnapResult before the
+# snap→record rename. Not in __all__, not in docs. Kept so old imports and
+# traceback-matching code keep working.
+SnapResult = RecordResult

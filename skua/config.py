@@ -1,49 +1,35 @@
-"""Configuration management for Skua."""
+"""Configuration for Skua.
+
+All runtime settings are resolved from environment variables. `skua.configure()`
+is deprecated — it exists only to keep older notebooks running. Prefer:
+
+    SKUA_API_URL    — override the API host (default: https://api.skua.dev)
+    SKUA_WEB_URL    — override the web host (default: https://skua.dev)
+    SKUA_TOKEN      — authentication token (also supported: ~/.skua/client file)
+
+Per-collection visibility lives on `skua.collection(visibility=...)` now,
+not here.
+"""
 
 import os
+import warnings
 from pathlib import Path
 from typing import Optional
 
-# Default configuration
+# `client_token_file` is the on-disk store for the X-Skua-Token value used by
+# every API call from this machine. The same file is used whether the user
+# is anonymous (auto-generated `anon_*` value) or verified (token persisted
+# after login() / auth()) — there is no "session" concept on disk anymore.
+#
+# The legacy ~/.skua/session and ~/.skua/token files are still read on first
+# access (see client.get_client_token) so existing installs migrate
+# transparently. New writes always go to ~/.skua/client.
 _config = {
     "api_url": os.getenv("SKUA_API_URL", "https://api.skua.dev"),
     "web_url": os.getenv("SKUA_WEB_URL", "https://skua.dev"),
-    "session_file": Path.home() / ".skua" / "session",
+    "client_token_file": Path.home() / ".skua" / "client",
     "token": None,
 }
-
-# Session-wide settings set by skua.init()
-_session_config: dict = {}
-
-
-def init(public: Optional[bool] = None) -> None:
-    """Set session-wide defaults for record().
-
-    Call once at the top of a notebook to apply settings to all subsequent
-    record() calls. Per-call arguments to record() override these defaults.
-
-    Args:
-        public: Whether findings are public (True) or private (False).
-                If not set, the server decides based on your account status:
-                anonymous users get public, verified users get private.
-
-    Example:
-        >>> import skua
-        >>> skua.init(public=True)  # All findings public this session
-        >>> skua.record(fig, title="Revenue")  # Uses the public default
-        >>> skua.record(fig2, title="Internal", public=False)  # Override to private
-    """
-    if public is not None:
-        _session_config["public"] = public
-
-
-def get_session_public() -> Optional[bool]:
-    """Get the session-wide public setting from init().
-
-    Returns:
-        True/False if set via init(), None if not configured
-    """
-    return _session_config.get("public")
 
 
 def configure(
@@ -51,84 +37,69 @@ def configure(
     web_url: Optional[str] = None,
     session_file: Optional[Path] = None,
     token: Optional[str] = None,
+    client_token_file: Optional[Path] = None,
 ) -> None:
-    """Configure low-level Skua settings (API URL, token, etc.).
+    """Deprecated. Use environment variables (SKUA_API_URL, SKUA_WEB_URL,
+    SKUA_TOKEN) instead, and set per-collection visibility on
+    `skua.collection(visibility=...)`.
 
-    For visibility defaults use skua.init() instead.
-
-    Args:
-        api_url: Base URL for Skua API (default: https://api.skua.dev)
-        web_url: Base URL for Skua web app (default: https://skua.dev)
-        session_file: Path to session ID file (default: ~/.skua/session)
-        token: Authentication token for programmatic access (default: None)
-
-    Example:
-        >>> import skua
-        >>> skua.configure(api_url="http://localhost:8000", web_url="http://localhost:5173")
+    Kept so old notebooks don't break. Emits DeprecationWarning.
     """
+    warnings.warn(
+        "skua.configure() is deprecated. Use the SKUA_API_URL / SKUA_WEB_URL / "
+        "SKUA_TOKEN environment variables, and set per-collection visibility "
+        "on skua.collection(visibility=...). This function will be removed "
+        "in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     if api_url is not None:
         _config["api_url"] = api_url
 
     if web_url is not None:
         _config["web_url"] = web_url
 
-    if session_file is not None:
-        _config["session_file"] = session_file
+    # `session_file` is the historical kwarg name; still honored as an alias.
+    if client_token_file is not None:
+        _config["client_token_file"] = client_token_file
+    elif session_file is not None:
+        _config["client_token_file"] = session_file
 
     if token is not None:
         _config["token"] = token
 
 
 def get_api_url() -> str:
-    """Get the configured API URL.
-
-    Returns:
-        API URL string
-    """
     return _config["api_url"]
 
 
-def get_session_file() -> Path:
-    """Get the configured session file path.
+def get_web_url() -> str:
+    return _config["web_url"]
 
-    Returns:
-        Path to session file
-    """
-    return _config["session_file"]
+
+def get_client_token_file() -> Path:
+    return _config["client_token_file"]
+
+
+# Back-compat alias — older callers (and tests) still reach for this.
+def get_session_file() -> Path:
+    return get_client_token_file()
 
 
 def get_token() -> Optional[str]:
-    """Get the authentication token.
+    """Return an explicit auth token from runtime config or env var.
 
-    Priority: runtime config > env var > ~/.skua/token file.
-
-    Returns:
-        Token string or None if not configured
+    Note: this does NOT read the on-disk client token file — that lives in
+    `client.get_client_token()`. Use this only when you want to know if an
+    explicit override (SKUA_TOKEN / configure(token=...)) is in effect.
     """
-    # Runtime config (set via configure() or set_token())
     token = _config.get("token")
     if token:
         return token
 
-    # Environment variable
     token = os.getenv("SKUA_TOKEN")
     if token:
         return token
 
-    # Persisted token file
-    token_file = Path.home() / ".skua" / "token"
-    if token_file.exists():
-        token = token_file.read_text().strip()
-        if token:
-            return token
-
     return None
-
-
-def get_web_url() -> str:
-    """Get the configured web app URL.
-
-    Returns:
-        Web app URL string
-    """
-    return _config["web_url"]

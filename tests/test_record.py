@@ -1,15 +1,15 @@
-"""Tests for the record() function.
+"""Tests for the snap() function.
 
-This module tests the main user-facing record() function that ties together
-serializers and client to upload findings to Skua.
+This module tests the main user-facing snap() function that ties together
+serializers and client to upload records to Skua.
 
 Tests are organized by functionality:
-- Basic record() flow
+- Basic snap() flow
 - Parameter handling
 - Integration with serializers
 - Integration with client
 - URL construction
-- RecordResult return value
+- SnapResult return value
 - Error handling
 - Edge cases
 """
@@ -17,26 +17,58 @@ Tests are organized by functionality:
 import pytest
 from unittest.mock import patch, MagicMock
 
-from skua.record import record
-from skua.result import RecordResult
-from skua.exceptions import UploadError, SerializationError
+from skua.record import record, snap
+from skua.result import SnapResult
+from skua.exceptions import ConfigurationError, UploadError, SerializationError
+
+
+class TestSnapAliasStillWorks:
+    """`snap` is kept as a silent alias so existing notebooks don't break."""
+
+    def test_snap_is_record(self):
+        assert snap is record
+
+
+class TestRecordVisibilityKwarg:
+    """record() accepts an explicit three-way visibility= kwarg."""
+
+    def _run_with_visibility(self, **kwargs):
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "x", "visibility": "public"}
+            record("test", title="T", **kwargs)
+            return mock_upload.call_args[0][0]["visibility"]
+
+    def test_visibility_public(self):
+        assert self._run_with_visibility(visibility="public") == "public"
+
+    def test_visibility_unlisted(self):
+        assert self._run_with_visibility(visibility="unlisted") == "unlisted"
+
+    def test_visibility_private(self):
+        assert self._run_with_visibility(visibility="private") == "private"
+
+    def test_invalid_visibility_raises(self):
+        from skua.exceptions import ValidationError
+        with pytest.raises(ValidationError, match="Invalid visibility"):
+            record("test", title="T", visibility="secret")  # type: ignore[arg-type]
+
 
 
 class TestRecordBasicFlow:
-    """Test basic record() function flow."""
+    """Test basic snap() function flow."""
 
     def test_record_returns_record_result(self):
-        """Test that record() returns a RecordResult object."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test that snap() returns a SnapResult object."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record("test string", title="Test")
+            result = snap("test string", title="Test")
 
-            assert isinstance(result, RecordResult)
+            assert isinstance(result, SnapResult)
 
     def test_record_calls_serialize_object(self):
-        """Test that record() calls serialize_object with the input."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        """Test that snap() calls serialize_object with the input."""
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.serialize_object") as mock_serialize:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_serialize.return_value = {
@@ -46,16 +78,16 @@ class TestRecordBasicFlow:
                 "metadata": {}
             }
 
-            record("test string", title="Test")
+            snap("test string", title="Test")
 
             mock_serialize.assert_called_once_with("test string")
 
-    def test_record_calls_upload_finding(self):
-        """Test that record() calls upload_finding with serialized data."""
-        with patch("skua.record.upload_finding") as mock_upload:
+    def test_record_calls_upload_record(self):
+        """Test that snap() calls upload_record with serialized data."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            record("test string", title="Test Title")
+            snap("test string", title="Test Title")
 
             mock_upload.assert_called_once()
             call_args = mock_upload.call_args
@@ -66,13 +98,13 @@ class TestRecordBasicFlow:
             assert data["content"]["format"] == "plain"
 
     def test_record_prints_url(self, capsys):
-        """Test that record() prints the URL to stdout."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        """Test that snap() prints the URL to stdout."""
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "abc123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "http://localhost:5173"
 
-            record("test", title="Test")
+            snap("test", title="Test")
 
             captured = capsys.readouterr()
             assert "abc123" in captured.out
@@ -80,31 +112,31 @@ class TestRecordBasicFlow:
 
 
 class TestRecordParameters:
-    """Test record() parameter handling."""
+    """Test snap() parameter handling."""
 
     def test_record_with_title(self):
         """Test that title parameter is passed through."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            record("test", title="My Title")
+            snap("test", title="My Title")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
             assert data["title"] == "My Title"
 
     def test_record_requires_title(self):
-        """Test that record() raises ValidationError without a title."""
+        """Test that snap() raises ValidationError without a title."""
         from skua.exceptions import ValidationError
         with pytest.raises(ValidationError, match="Title is required"):
-            record("test", title="")
+            snap("test", title="")
 
     def test_record_with_description(self):
         """Test that description parameter is passed through."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            record("test", title="Test", description="A description")
+            snap("test", title="Test", description="A description")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -112,57 +144,97 @@ class TestRecordParameters:
 
     def test_record_with_no_description_passes_none(self):
         """Test that no description defaults to None."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            record("test", title="Test")
+            snap("test", title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
             assert data["description"] is None
 
 
-class TestRecordResultContents:
-    """Test the contents of the returned RecordResult."""
+class TestSnapResultContents:
+    """Test the contents of the returned SnapResult."""
 
     def test_record_result_has_correct_url(self):
-        """Test that RecordResult.url is constructed correctly."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        """Test that SnapResult.url is constructed correctly."""
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "abc123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "http://localhost:5173"
 
-            result = record("test", title="Test")
+            result = snap("test", title="Test")
 
-            assert result.url == "http://localhost:5173/f/abc123"
+            assert result.url == "http://localhost:5173/r/abc123"
 
     def test_record_result_has_metadata_with_id(self):
-        """Test that RecordResult.metadata contains the finding ID."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test that SnapResult.metadata contains the record ID."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "xyz789", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record("test", title="Test")
+            result = snap("test", title="Test")
 
             assert result.metadata["id"] == "xyz789"
 
     def test_record_result_has_metadata_with_title(self):
-        """Test that RecordResult.metadata contains the title."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test that SnapResult.metadata contains the title."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record("test", title="My Custom Title")
+            result = snap("test", title="My Custom Title")
 
             assert result.metadata["title"] == "My Custom Title"
 
+    def test_record_result_has_metadata_with_creator_username(self):
+        """SnapResult.metadata exposes creator_username when the server returns it.
+
+        Users need this to build profile URLs without round-tripping to the web UI,
+        e.g. f"https://skua.dev/u/{result.metadata['creator_username']}".
+        """
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
+
+            result = snap("test", title="Test")
+
+            assert result.metadata["creator_username"] == "swift-gannet-4291"
+
+    def test_record_result_omits_creator_username_when_absent(self):
+        """Anonymous snaps (server doesn't return creator_username) should not
+        surface the key at all rather than setting it to None."""
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public"}
+
+            result = snap("test", title="Test")
+
+            assert "creator_username" not in result.metadata
+
+    def test_record_result_has_raw_url_pointing_at_api(self):
+        """SnapResult.metadata.raw_url hits the API directly, not the web origin.
+
+        Frontend proxy used to serve /raw but tripped CF Pages bot filter for
+        Python UAs. API handles it directly and skips that edge.
+        """
+        with patch("skua.record.upload_record") as mock_upload, \
+             patch("skua.record.get_api_url") as mock_api_url, \
+             patch("skua.record.get_web_url") as mock_web_url:
+            mock_upload.return_value = {"id": "raw123", "visibility": "public"}
+            mock_api_url.return_value = "https://api.skua.dev"
+            mock_web_url.return_value = "https://skua.dev"
+
+            result = snap("test", title="Test")
+
+            assert result.metadata["raw_url"] == "https://api.skua.dev/records/raw123/raw"
+
     def test_record_result_wraps_original_object(self):
-        """Test that RecordResult wraps the original object."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test that SnapResult wraps the original object."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             original = {"key": "value", "number": 42}
-            result = record(original, title="Test")
+            result = snap(original, title="Test")
 
-            # RecordResult should delegate operations to the wrapped object
+            # SnapResult should delegate operations to the wrapped object
             assert result["key"] == "value"
             assert result["number"] == 42
 
@@ -172,48 +244,48 @@ class TestRecordURLConstruction:
 
     def test_url_for_production_api(self):
         """Test URL construction for production API."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "abc123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "https://skua.dev"
 
-            result = record("test", title="Test")
+            result = snap("test", title="Test")
 
-            assert result.url == "https://skua.dev/f/abc123"
+            assert result.url == "https://skua.dev/r/abc123"
 
     def test_url_for_localhost_api(self):
         """Test URL construction for localhost API."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "abc123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "http://localhost:5173"
 
-            result = record("test", title="Test")
+            result = snap("test", title="Test")
 
-            assert result.url == "http://localhost:5173/f/abc123"
+            assert result.url == "http://localhost:5173/r/abc123"
 
     def test_url_for_custom_api(self):
         """Test URL construction for custom API (fallback behavior)."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "abc123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "https://custom.example.com"
 
-            result = record("test", title="Test")
+            result = snap("test", title="Test")
 
             # Fallback: use API URL as app URL
-            assert result.url == "https://custom.example.com/f/abc123"
+            assert result.url == "https://custom.example.com/r/abc123"
 
 
 class TestRecordWithDifferentObjectTypes:
-    """Test record() with various object types."""
+    """Test snap() with various object types."""
 
     def test_record_with_string(self):
         """Test recording a plain string."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record("Hello, World!", title="Test")
+            result = snap("Hello, World!", title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -222,10 +294,10 @@ class TestRecordWithDifferentObjectTypes:
 
     def test_record_with_dict(self):
         """Test recording a dictionary uses DictSerializer."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record({"key": "value"}, title="Test")
+            result = snap({"key": "value"}, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -234,10 +306,10 @@ class TestRecordWithDifferentObjectTypes:
 
     def test_record_with_list(self):
         """Test recording a list (falls back to string serializer)."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record([1, 2, 3, 4, 5], title="Test")
+            result = snap([1, 2, 3, 4, 5], title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -246,10 +318,10 @@ class TestRecordWithDifferentObjectTypes:
 
     def test_record_with_integer(self):
         """Test recording an integer."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(42, title="Test")
+            result = snap(42, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -258,7 +330,7 @@ class TestRecordWithDifferentObjectTypes:
 
 
 class TestRecordWithMatplotlib:
-    """Test record() with matplotlib figures."""
+    """Test snap() with matplotlib figures."""
 
     @pytest.fixture
     def matplotlib_figure(self):
@@ -277,10 +349,10 @@ class TestRecordWithMatplotlib:
 
     def test_record_matplotlib_figure(self, matplotlib_figure):
         """Test recording a matplotlib figure."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(matplotlib_figure, title="Test Plot")
+            result = snap(matplotlib_figure, title="Test Plot")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -291,10 +363,10 @@ class TestRecordWithMatplotlib:
 
     def test_record_matplotlib_figure_metadata(self, matplotlib_figure):
         """Test that matplotlib figure metadata is included."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(matplotlib_figure, title="Test")
+            result = snap(matplotlib_figure, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -303,7 +375,7 @@ class TestRecordWithMatplotlib:
 
 
 class TestRecordWithPandas:
-    """Test record() with pandas DataFrames."""
+    """Test snap() with pandas DataFrames."""
 
     @pytest.fixture
     def sample_dataframe(self):
@@ -320,10 +392,10 @@ class TestRecordWithPandas:
 
     def test_record_dataframe(self, sample_dataframe):
         """Test recording a pandas DataFrame."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(sample_dataframe, title="Test DataFrame")
+            result = snap(sample_dataframe, title="Test DataFrame")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -332,10 +404,10 @@ class TestRecordWithPandas:
 
     def test_record_dataframe_metadata(self, sample_dataframe):
         """Test that DataFrame metadata is included."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(sample_dataframe, title="Test")
+            result = snap(sample_dataframe, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -347,7 +419,7 @@ class TestRecordWithPandas:
 
 
 class TestRecordWithPIL:
-    """Test record() with PIL/Pillow images."""
+    """Test snap() with PIL/Pillow images."""
 
     @pytest.fixture
     def pil_image(self):
@@ -360,10 +432,10 @@ class TestRecordWithPIL:
 
     def test_record_pil_image(self, pil_image):
         """Test recording a PIL Image."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(pil_image, title="Test Image")
+            result = snap(pil_image, title="Test Image")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -372,10 +444,10 @@ class TestRecordWithPIL:
 
     def test_record_pil_image_metadata(self, pil_image):
         """Test that PIL Image metadata is included."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(pil_image, title="Test")
+            result = snap(pil_image, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -385,15 +457,15 @@ class TestRecordWithPIL:
 
 
 class TestRecordErrorHandling:
-    """Test error handling in record()."""
+    """Test error handling in snap()."""
 
     def test_record_propagates_upload_error(self):
         """Test that UploadError from client propagates."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.side_effect = UploadError("Upload failed: 500 Internal Server Error")
 
             with pytest.raises(UploadError) as exc_info:
-                record("test", title="Test")
+                snap("test", title="Test")
 
             assert "Upload failed" in str(exc_info.value)
 
@@ -403,31 +475,31 @@ class TestRecordErrorHandling:
             mock_serialize.side_effect = SerializationError("Cannot serialize")
 
             with pytest.raises(SerializationError) as exc_info:
-                record("test", title="Test")
+                snap("test", title="Test")
 
             assert "Cannot serialize" in str(exc_info.value)
 
     def test_record_with_api_connection_error(self):
         """Test handling of connection errors from client."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.side_effect = UploadError(
-                "Failed to upload finding: Connection refused"
+                "Failed to upload record: Connection refused"
             )
 
             with pytest.raises(UploadError) as exc_info:
-                record("test", title="Test")
+                snap("test", title="Test")
 
             assert "Connection refused" in str(exc_info.value)
 
     def test_record_with_api_timeout(self):
         """Test handling of timeout errors from client."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.side_effect = UploadError(
-                "Failed to upload finding: Request timeout"
+                "Failed to upload record: Request timeout"
             )
 
             with pytest.raises(UploadError) as exc_info:
-                record("test", title="Test")
+                snap("test", title="Test")
 
             assert "timeout" in str(exc_info.value).lower()
 
@@ -439,26 +511,38 @@ class TestRecordEdgeCases:
         """Test that recording None raises ValidationError."""
         from skua.exceptions import ValidationError
         with pytest.raises(ValidationError, match="Cannot record None"):
-            record(None, title="Test")
+            snap(None, title="Test")
 
-    def test_record_with_empty_string(self):
-        """Test recording an empty string."""
-        with patch("skua.record.upload_finding") as mock_upload:
-            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
+    def test_record_with_empty_string_raises(self):
+        """Empty string is rejected before serialization/upload."""
+        from skua.exceptions import ValidationError
+        with patch("skua.record.upload_record") as mock_upload:
+            with pytest.raises(ValidationError, match="empty str"):
+                snap("", title="Test")
+            mock_upload.assert_not_called()
 
-            result = record("", title="Test")
+    def test_record_with_empty_dict_raises(self):
+        """Empty dict is rejected before serialization/upload."""
+        from skua.exceptions import ValidationError
+        with patch("skua.record.upload_record") as mock_upload:
+            with pytest.raises(ValidationError, match="empty dict"):
+                snap({}, title="Test")
+            mock_upload.assert_not_called()
 
-            call_args = mock_upload.call_args
-            data = call_args[0][0]
-            assert data["content"]["type"] == "text"
-            assert data["content"]["data"] == ""
+    def test_record_with_empty_list_raises(self):
+        """Empty list is rejected before serialization/upload."""
+        from skua.exceptions import ValidationError
+        with patch("skua.record.upload_record") as mock_upload:
+            with pytest.raises(ValidationError, match="empty list"):
+                snap([], title="Test")
+            mock_upload.assert_not_called()
 
     def test_record_with_unicode(self):
         """Test recording unicode content."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record("Hello\u4e16\u754c! \U0001F680", title="Test")  # Chinese + rocket emoji
+            result = snap("Hello\u4e16\u754c! \U0001F680", title="Test")  # Chinese + rocket emoji
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -467,13 +551,13 @@ class TestRecordEdgeCases:
 
     def test_record_with_multiline_string(self):
         """Test recording multiline text."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             multiline = """Line 1
 Line 2
 Line 3"""
-            result = record(multiline, title="Test")
+            result = snap(multiline, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -482,10 +566,10 @@ Line 3"""
 
     def test_record_with_special_characters_in_title(self):
         """Test recording with special characters in title."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record("test", title="Test <script>alert('xss')</script>")
+            result = snap("test", title="Test <script>alert('xss')</script>")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -495,49 +579,142 @@ Line 3"""
         """Test recording with a title over 500 chars raises ValidationError."""
         from skua.exceptions import ValidationError
         with pytest.raises(ValidationError, match="Title too long"):
-            record("test", title="x" * 501)
+            snap("test", title="x" * 501)
 
 class TestRecordTitleValidation:
-    """Test title validation in record()."""
+    """Test title validation in snap()."""
 
     def test_empty_title_raises_validation_error(self):
         """Test that empty string title raises ValidationError."""
         from skua.exceptions import ValidationError
         with pytest.raises(ValidationError, match="Title is required"):
-            record("test", title="")
+            snap("test", title="")
 
     def test_whitespace_title_raises_validation_error(self):
         """Test that whitespace-only title raises ValidationError."""
         from skua.exceptions import ValidationError
         with pytest.raises(ValidationError, match="Title is required"):
-            record("test", title="   ")
+            snap("test", title="   ")
 
     def test_title_over_500_chars_raises_validation_error(self):
         """Test that title over 500 characters raises ValidationError."""
         from skua.exceptions import ValidationError
         with pytest.raises(ValidationError, match="Title too long"):
-            record("test", title="x" * 501)
+            snap("test", title="x" * 501)
+
+    def test_non_string_title_raises_validation_error(self):
+        """Defensive guard: passing a non-string title (e.g. a Mock left over
+        from a test fixture, or accidentally an int) is rejected at the SDK
+        boundary instead of silently uploading repr(obj) as the title."""
+        from skua.exceptions import ValidationError
+        from unittest.mock import MagicMock
+        with pytest.raises(ValidationError, match="Title must be a string"):
+            snap("test", title=MagicMock())  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="Title must be a string"):
+            snap("test", title=42)  # type: ignore[arg-type]
 
     def test_title_at_500_chars_succeeds(self):
         """Test that title at exactly 500 characters succeeds."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
-            record("test", title="x" * 500)
+            snap("test", title="x" * 500)
 
     def test_title_is_stripped(self):
         """Test that title whitespace is stripped."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            record("test", title="  My Title  ")
+            snap("test", title="  My Title  ")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
             assert data["title"] == "My Title"
 
 
+class TestRecordTagsParameter:
+    """Test tags parameter in snap()."""
+
+    def test_tags_passed_through_to_upload(self):
+        """Test that tags are included in the upload data."""
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "user1"}
+
+            snap("test", title="Test", tags=["ml", "analysis"])
+
+            call_args = mock_upload.call_args
+            data = call_args[0][0]
+            assert data["tags"] == ["ml", "analysis"]
+
+    def test_no_tags_defaults_to_empty_list(self):
+        """Test that omitting tags defaults to empty list."""
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "user1"}
+
+            snap("test", title="Test")
+
+            call_args = mock_upload.call_args
+            data = call_args[0][0]
+            assert data["tags"] == []
+
+    def test_too_many_tags_raises_validation_error(self):
+        """Test that more than 20 tags raises ValidationError."""
+        from skua.exceptions import ValidationError
+        with pytest.raises(ValidationError, match="Too many tags"):
+            snap("test", title="Test", tags=[f"tag{i}" for i in range(21)])
+
+    def test_tag_over_30_chars_raises_validation_error(self):
+        """Test that a tag over 30 characters raises ValidationError."""
+        from skua.exceptions import ValidationError
+        with pytest.raises(ValidationError, match="Tag too long"):
+            snap("test", title="Test", tags=["x" * 31])
+
+    def test_empty_tags_are_filtered(self):
+        """Test that empty string tags are removed."""
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "user1"}
+
+            snap("test", title="Test", tags=["ml", "", "  ", "analysis"])
+
+            call_args = mock_upload.call_args
+            data = call_args[0][0]
+            assert data["tags"] == ["ml", "analysis"]
+
+    def test_tags_are_stripped(self):
+        """Test that tag whitespace is stripped."""
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "user1"}
+
+            snap("test", title="Test", tags=["  ml  ", "analysis  "])
+
+            call_args = mock_upload.call_args
+            data = call_args[0][0]
+            assert data["tags"] == ["ml", "analysis"]
+
+    def test_exactly_20_tags_succeeds(self):
+        """Test that exactly 20 tags is allowed."""
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "user1"}
+
+            snap("test", title="Test", tags=[f"tag{i}" for i in range(20)])
+
+            call_args = mock_upload.call_args
+            data = call_args[0][0]
+            assert len(data["tags"]) == 20
+
+    def test_tag_at_30_chars_succeeds(self):
+        """Test that a tag at exactly 30 characters is allowed."""
+        with patch("skua.record.upload_record") as mock_upload:
+            mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "user1"}
+
+            snap("test", title="Test", tags=["x" * 30])
+
+            call_args = mock_upload.call_args
+            data = call_args[0][0]
+            assert data["tags"] == ["x" * 30]
+
+
 class TestRecordIntegrationWithSerializers:
-    """Test record() integration with the serializer registry."""
+    """Test snap() integration with the serializer registry."""
 
     def test_serializer_priority_matplotlib_over_fallback(self):
         """Test that matplotlib serializer takes priority over fallback."""
@@ -548,12 +725,12 @@ class TestRecordIntegrationWithSerializers:
         except ImportError:
             pytest.skip("matplotlib not installed")
 
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             fig, ax = plt.subplots()
             try:
-                record(fig, title="Test")
+                snap(fig, title="Test")
 
                 call_args = mock_upload.call_args
                 data = call_args[0][0]
@@ -570,11 +747,11 @@ class TestRecordIntegrationWithSerializers:
         except ImportError:
             pytest.skip("pandas not installed")
 
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             df = pd.DataFrame({"a": [1]})
-            record(df, title="Test")
+            snap(df, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -584,7 +761,7 @@ class TestRecordIntegrationWithSerializers:
 
     def test_fallback_to_string_serializer(self):
         """Test fallback to string serializer for unknown types."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             # Custom class that no serializer handles specifically
@@ -592,7 +769,7 @@ class TestRecordIntegrationWithSerializers:
                 def __str__(self):
                     return "CustomObject()"
 
-            record(CustomObject(), title="Test")
+            snap(CustomObject(), title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -602,11 +779,11 @@ class TestRecordIntegrationWithSerializers:
 
 
 class TestRecordWithCustomObjects:
-    """Test record() with custom objects."""
+    """Test snap() with custom objects."""
 
     def test_record_custom_object_with_str(self):
         """Test recording a custom object with __str__."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             class Point:
@@ -617,7 +794,7 @@ class TestRecordWithCustomObjects:
                 def __str__(self):
                     return f"Point({self.x}, {self.y})"
 
-            result = record(Point(3, 4), title="Test")
+            result = snap(Point(3, 4), title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -625,13 +802,13 @@ class TestRecordWithCustomObjects:
 
     def test_record_custom_object_without_str(self):
         """Test recording a custom object without __str__ uses default repr."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             class Plain:
                 pass
 
-            result = record(Plain(), title="Test")
+            result = snap(Plain(), title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -639,49 +816,49 @@ class TestRecordWithCustomObjects:
 
 
 class TestRecordConcurrency:
-    """Test record() behavior in concurrent scenarios."""
+    """Test snap() behavior in concurrent scenarios."""
 
     def test_multiple_records_in_sequence(self):
-        """Test multiple sequential record() calls."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test multiple sequential snap() calls."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.side_effect = [
                 {"id": "id1", "visibility": "public", "creator_username": None},
                 {"id": "id2", "visibility": "public", "creator_username": None},
                 {"id": "id3", "visibility": "public", "creator_username": None},
             ]
 
-            r1 = record("first", title="Test")
-            r2 = record("second", title="Test")
-            r3 = record("third", title="Test")
+            r1 = snap("first", title="Test")
+            r2 = snap("second", title="Test")
+            r3 = snap("third", title="Test")
 
             assert r1.metadata["id"] == "id1"
             assert r2.metadata["id"] == "id2"
             assert r3.metadata["id"] == "id3"
 
     def test_record_does_not_modify_input(self):
-        """Test that record() does not modify the input object."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test that snap() does not modify the input object."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             original_list = [1, 2, 3]
             original_copy = original_list.copy()
 
-            record(original_list, title="Test")
+            snap(original_list, title="Test")
 
             assert original_list == original_copy
 
 
 class TestRecordAllParametersCombined:
-    """Test record() with all parameters specified at once."""
+    """Test snap() with all parameters specified at once."""
 
     def test_all_parameters_passed_correctly(self):
         """Test that all parameters work together correctly."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "test-id-123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "http://localhost:5173"
 
-            result = record(
+            result = snap(
                 {"test": "data"},
                 title="Complete Test",
                 description="A test description",
@@ -702,24 +879,24 @@ class TestRecordFileSizeLimits:
 
     def test_large_file_raises_upload_error(self):
         """Test that files exceeding 10MB raise UploadError."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.side_effect = UploadError(
                 "File too large (15.0MB). Maximum allowed: 10MB."
             )
 
             with pytest.raises(UploadError) as exc_info:
-                record("x" * (15 * 1024 * 1024), title="Test")  # 15MB of data
+                snap("x" * (15 * 1024 * 1024), title="Test")  # 15MB of data
 
             assert "too large" in str(exc_info.value).lower()
             assert "10MB" in str(exc_info.value)
 
     def test_file_at_limit_succeeds(self):
         """Test that files at the limit (10MB) succeed."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             # This should not raise - mock allows it through
-            result = record("test data at reasonable size", title="Test")
+            result = snap("test data at reasonable size", title="Test")
 
             assert result.metadata["id"] == "test123"
 
@@ -729,10 +906,10 @@ class TestRecordSerializationOutput:
 
     def test_serialized_content_has_required_fields(self):
         """Test that serialized content has all required fields."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            record("test string", title="Test")
+            snap("test string", title="Test")
 
             call_args = mock_upload.call_args
             content = call_args[0][0]["content"]
@@ -745,10 +922,10 @@ class TestRecordSerializationOutput:
 
     def test_serialized_content_types_are_strings(self):
         """Test that type and format are strings."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            record("test", title="Test")
+            snap("test", title="Test")
 
             call_args = mock_upload.call_args
             content = call_args[0][0]["content"]
@@ -757,47 +934,47 @@ class TestRecordSerializationOutput:
             assert isinstance(content["format"], str)
 
 
-class TestRecordResultIntegrity:
-    """Test RecordResult maintains data integrity."""
+class TestSnapResultIntegrity:
+    """Test SnapResult maintains data integrity."""
 
     def test_result_url_matches_id(self):
         """Test that result URL contains the correct ID."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "unique-id-789", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "http://localhost:5173"
 
-            result = record("test", title="Test")
+            result = snap("test", title="Test")
 
             assert "unique-id-789" in result.url
             assert result.metadata["id"] == "unique-id-789"
 
     def test_result_metadata_matches_input(self):
         """Test that result metadata matches input parameters."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record("test", title="Exact Title")
+            result = snap("test", title="Exact Title")
 
             assert result.metadata["title"] == "Exact Title"
 
     def test_result_allows_iteration_on_list(self):
-        """Test RecordResult allows iteration when wrapping a list."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test SnapResult allows iteration when wrapping a list."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record([1, 2, 3, 4, 5], title="Test")
+            result = snap([1, 2, 3, 4, 5], title="Test")
 
             # Should be iterable
             items = list(result)
             assert items == [1, 2, 3, 4, 5]
 
     def test_result_allows_key_access_on_dict(self):
-        """Test RecordResult allows key access when wrapping a dict."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        """Test SnapResult allows key access when wrapping a dict."""
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record({"a": 1, "b": 2}, title="Test")
+            result = snap({"a": 1, "b": 2}, title="Test")
 
             assert result["a"] == 1
             assert result["b"] == 2
@@ -805,16 +982,16 @@ class TestRecordResultIntegrity:
 
 
 class TestRecordPrintBehavior:
-    """Test stdout print behavior of record()."""
+    """Test stdout print behavior of snap()."""
 
     def test_print_format_includes_checkmark(self, capsys):
         """Test that printed output includes checkmark symbol."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "http://localhost:5173"
 
-            record("test", title="Test")
+            snap("test", title="Test")
 
             captured = capsys.readouterr()
             assert "✓" in captured.out
@@ -822,24 +999,24 @@ class TestRecordPrintBehavior:
 
     def test_print_includes_full_url(self, capsys):
         """Test that printed output includes the full URL."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "abc123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "https://skua.dev"
 
-            record("test", title="Test")
+            snap("test", title="Test")
 
             captured = capsys.readouterr()
-            assert "https://skua.dev/f/abc123" in captured.out
+            assert "https://skua.dev/r/abc123" in captured.out
 
     def test_print_goes_to_stdout(self, capsys):
         """Test that output goes to stdout, not stderr."""
-        with patch("skua.record.upload_finding") as mock_upload, \
+        with patch("skua.record.upload_record") as mock_upload, \
              patch("skua.record.get_web_url") as mock_web_url:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
             mock_web_url.return_value = "http://localhost:5173"
 
-            record("test", title="Test")
+            snap("test", title="Test")
 
             captured = capsys.readouterr()
             assert len(captured.out) > 0
@@ -847,14 +1024,14 @@ class TestRecordPrintBehavior:
 
 
 class TestRecordNumericTypes:
-    """Test record() with various numeric types."""
+    """Test snap() with various numeric types."""
 
     def test_record_float(self):
         """Test recording a float."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(3.14159, title="Test")
+            result = snap(3.14159, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -863,10 +1040,10 @@ class TestRecordNumericTypes:
 
     def test_record_complex(self):
         """Test recording a complex number."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(3 + 4j, title="Test")
+            result = snap(3 + 4j, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -876,10 +1053,10 @@ class TestRecordNumericTypes:
 
     def test_record_boolean(self):
         """Test recording a boolean."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
-            result = record(True, title="Test")
+            result = snap(True, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -888,11 +1065,11 @@ class TestRecordNumericTypes:
 
 
 class TestRecordNestedStructures:
-    """Test record() with nested data structures."""
+    """Test snap() with nested data structures."""
 
     def test_record_nested_dict(self):
         """Test recording a nested dictionary."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             nested = {
@@ -902,7 +1079,7 @@ class TestRecordNestedStructures:
                     }
                 }
             }
-            result = record(nested, title="Test")
+            result = snap(nested, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -911,14 +1088,14 @@ class TestRecordNestedStructures:
 
     def test_record_list_of_dicts(self):
         """Test recording a list of dictionaries."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             list_of_dicts = [
                 {"name": "Alice", "age": 30},
                 {"name": "Bob", "age": 25}
             ]
-            result = record(list_of_dicts, title="Test")
+            result = snap(list_of_dicts, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -927,15 +1104,15 @@ class TestRecordNestedStructures:
 
 
 class TestRecordSpecialStrings:
-    """Test record() with special string content."""
+    """Test snap() with special string content."""
 
     def test_record_json_string(self):
         """Test recording a JSON string (should be treated as text)."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             json_str = '{"key": "value"}'
-            result = record(json_str, title="Test")
+            result = snap(json_str, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -944,11 +1121,11 @@ class TestRecordSpecialStrings:
 
     def test_record_html_string(self):
         """Test recording HTML content."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             html = "<html><body><h1>Title</h1></body></html>"
-            result = record(html, title="Test")
+            result = snap(html, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
@@ -957,12 +1134,92 @@ class TestRecordSpecialStrings:
 
     def test_record_sql_string(self):
         """Test recording SQL content."""
-        with patch("skua.record.upload_finding") as mock_upload:
+        with patch("skua.record.upload_record") as mock_upload:
             mock_upload.return_value = {"id": "test123", "visibility": "public", "creator_username": "swift-gannet-4291"}
 
             sql = "SELECT * FROM users WHERE id = 1;"
-            result = record(sql, title="Test")
+            result = snap(sql, title="Test")
 
             call_args = mock_upload.call_args
             data = call_args[0][0]
             assert data["content"]["data"] == sql
+
+
+# Append below — module-level call routes to the user's per-server Default
+# collection (no collection_name on the wire). Per-call visibility= still wins.
+# RecordResult exposes collection_name / collection_id / collection_url in metadata.
+
+import skua
+from skua.exceptions import ValidationError
+
+
+@pytest.fixture
+def fake_upload():
+    """Patch upload_record so we can inspect the payload."""
+    with patch("skua.record.upload_record") as upload:
+        upload.return_value = {
+            "id": "rec1234567890",
+            "creator_username": "testbird-42",
+            "visibility": "public",
+            "collection_id": "coll12345678",
+            "collection_name": "Default",
+            "collection_url": "https://skua.dev/u/testbird-42/c/default",
+        }
+        yield upload
+
+
+class TestRecordPayload:
+    def test_bare_record_omits_collection_name(self, fake_upload):
+        skua.record("hi", title="x")
+        payload = fake_upload.call_args.args[0]
+        assert "collection_name" not in payload
+
+    def test_record_includes_title_and_content(self, fake_upload):
+        skua.record("hi", title="My Note")
+        payload = fake_upload.call_args.args[0]
+        assert payload["title"] == "My Note"
+        assert "content" in payload
+
+    def test_record_visibility_passes_through(self, fake_upload):
+        skua.record("hi", title="x", visibility="unlisted")
+        payload = fake_upload.call_args.args[0]
+        assert payload["visibility"] == "unlisted"
+
+    def test_record_validates_visibility_value(self, fake_upload):
+        with pytest.raises(ValidationError, match="Invalid visibility"):
+            skua.record("hi", title="x", visibility="secret")
+
+
+class TestRecordResultMetadata:
+    def test_metadata_contains_collection_fields(self, fake_upload):
+        result = skua.record("hi", title="x")
+        assert result.metadata["collection_name"] == "Default"
+        assert result.metadata["collection_id"] == "coll12345678"
+        assert result.metadata["collection_url"] == "https://skua.dev/u/testbird-42/c/default"
+
+    def test_metadata_contains_record_id_and_url(self, fake_upload):
+        result = skua.record("hi", title="x")
+        assert result.metadata["id"] == "rec1234567890"
+        assert "/r/rec1234567890" in result.url
+
+    def test_metadata_does_not_contain_session_aliases(self, fake_upload):
+        """0.12 is a clean break — no session_name / session_id in user-visible metadata."""
+        result = skua.record("hi", title="x")
+        assert "session_name" not in result.metadata
+        assert "session_id" not in result.metadata
+
+
+class TestRecordValidation:
+    def test_record_none_raises(self):
+        with pytest.raises(ValidationError, match="None"):
+            skua.record(None, title="x")
+
+    def test_record_empty_title_raises(self):
+        with pytest.raises(ValidationError, match="[Tt]itle"):
+            skua.record("hi", title="")
+
+
+class TestInitIsRemoved:
+    def test_init_raises_with_migration_message(self):
+        with pytest.raises(ConfigurationError, match="removed in getskua 0.12"):
+            skua.init("anything")
