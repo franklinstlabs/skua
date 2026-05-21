@@ -10,7 +10,6 @@ import requests
 from skua.config import (
     get_api_url,
     get_client_token_file,
-    get_session_file,  # noqa: F401 — back-compat re-export
     get_token,
     get_web_url,
 )
@@ -58,16 +57,14 @@ def get_client_token() -> str:
     """Get or create the X-Skua-Token value for this machine.
 
     Resolution order:
-      1. Explicit override — SKUA_TOKEN env or skua.configure(token=...)
+      1. Explicit override — SKUA_TOKEN env var
       2. ~/.skua/client (canonical on-disk location)
-      3. Legacy fallback — ~/.skua/token or ~/.skua/session, transparently
-         migrated to ~/.skua/client on read
-      4. Generate a fresh anonymous identity (anon_*), persist to
+      3. Generate a fresh anonymous identity (anon_*), persist to
          ~/.skua/client
 
     The returned value is what we send as the X-Skua-Token header. Anonymous
     and verified identities are not distinguished here — the server decides
-    that based on the token itself.
+    based on the token itself.
     """
     explicit = get_token()
     if explicit:
@@ -81,26 +78,9 @@ def get_client_token() -> str:
         if existing:
             return existing
 
-    # Migrate from legacy file locations. Verified token first (a verified
-    # client whose ~/.skua/token still exists shouldn't lose its identity
-    # just because we renamed files), then anonymous session as a fallback.
-    for legacy_name in ("token", "session"):
-        legacy = client_file.parent / legacy_name
-        if legacy.exists():
-            value = legacy.read_text().strip()
-            if value:
-                client_file.write_text(value)
-                return value
-
     new_token = f"anon_{secrets.token_hex(8)}"
     client_file.write_text(new_token)
     return new_token
-
-
-# Back-compat alias for the historic name. Internal call sites have been
-# updated; external imports keep working.
-def get_session_id() -> str:
-    return get_client_token()
 
 
 def upload_record(data: dict[str, Any]) -> dict[str, Any]:
@@ -123,7 +103,7 @@ def upload_record(data: dict[str, Any]) -> dict[str, Any]:
     import json
 
     api_url = get_api_url()
-    session_id = get_session_id()
+    session_id = get_client_token()
 
     content = data["content"]
 
@@ -399,9 +379,6 @@ def set_token(raw_token: str) -> None:
         print(f"Profile: {web_url}/u/{username}")
 
 
-# Backward compatibility alias
-request_verification = login
-
 
 def get_auth_status() -> dict[str, Any]:
     """Get current authentication status.
@@ -421,7 +398,7 @@ def get_auth_status() -> dict[str, Any]:
         ...     print(f"Anonymous as @{status['username']}")
     """
     api_url = get_api_url()
-    session_id = get_session_id()
+    session_id = get_client_token()
 
     headers = {"X-Skua-Token": session_id}
 
@@ -478,7 +455,7 @@ def create_or_get_collection(
         UploadError: For other HTTP failures.
     """
     api_url = get_api_url()
-    session_id = get_session_id()
+    session_id = get_client_token()
 
     form = {"name": name}
     if visibility is not None:
@@ -512,8 +489,4 @@ def create_or_get_collection(
     return response.json()
 
 
-# Silent back-compat aliases — `upload_record` is the canonical name now.
-# Left in place so pinned releases of downstream tooling keep working.
-upload_snapshot = upload_record
-upload_finding = upload_record
 auth = set_token

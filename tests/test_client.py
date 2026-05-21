@@ -2,8 +2,8 @@
 
 Covers:
 - upload_record() - main upload function
-- get_session_id() - session management
-- request_verification() - email verification flow
+- get_client_token() - session management
+(request_verification removed in 0.13 — use login() directly)
 - get_auth_status() - authentication status check
 - Error handling for network and HTTP errors
 - Client-side validation (visibility, file size)
@@ -21,11 +21,10 @@ import requests
 
 from skua.client import (
     _extract_error_detail,
-    get_session_id,
+    get_client_token,
     upload_record,
     login,
     set_token,
-    request_verification,
     get_auth_status,
 )
 from skua.exceptions import UploadError
@@ -56,12 +55,12 @@ def mock_session_id():
     """Patch the client-token getter to return a predictable value.
 
     Both names are patched so callers using either the new
-    `get_client_token` or the back-compat `get_session_id` see the same
+    `get_client_token` or the back-compat `get_client_token` see the same
     value (the alias path forwards to get_client_token, but tests that
     patch only the alias would otherwise miss).
     """
     with patch("skua.client.get_client_token", return_value="anon_test123456"), \
-         patch("skua.client.get_session_id", return_value="anon_test123456") as mock:
+         patch("skua.client.get_client_token", return_value="anon_test123456") as mock:
         yield mock
 
 
@@ -69,7 +68,7 @@ def mock_session_id():
 def mock_verified_session_id():
     """Patch the client-token getter to return a verified value."""
     with patch("skua.client.get_client_token", return_value="verified_user_abc"), \
-         patch("skua.client.get_session_id", return_value="verified_user_abc") as mock:
+         patch("skua.client.get_client_token", return_value="verified_user_abc") as mock:
         yield mock
 
 
@@ -206,7 +205,7 @@ class TestExtractErrorDetail:
 
 
 # =============================================================================
-# Tests: get_session_id()
+# Tests: get_client_token()
 # =============================================================================
 
 
@@ -215,7 +214,7 @@ class TestGetSessionId:
 
     def test_creates_new_session_when_file_missing(self, temp_session_dir):
         """Test that a new session ID is created when file doesn't exist."""
-        session_id = get_session_id()
+        session_id = get_client_token()
 
         assert session_id.startswith("anon_")
         assert len(session_id) == 21  # "anon_" + 16 hex chars
@@ -228,7 +227,7 @@ class TestGetSessionId:
         temp_session_dir.parent.mkdir(parents=True, exist_ok=True)
         temp_session_dir.write_text(existing_id)
 
-        session_id = get_session_id()
+        session_id = get_client_token()
 
         assert session_id == existing_id
 
@@ -237,7 +236,7 @@ class TestGetSessionId:
         temp_session_dir.parent.mkdir(parents=True, exist_ok=True)
         temp_session_dir.write_text("")
 
-        session_id = get_session_id()
+        session_id = get_client_token()
 
         assert session_id.startswith("anon_")
         assert len(session_id) == 21
@@ -247,7 +246,7 @@ class TestGetSessionId:
         temp_session_dir.parent.mkdir(parents=True, exist_ok=True)
         temp_session_dir.write_text("   \n\t  ")
 
-        session_id = get_session_id()
+        session_id = get_client_token()
 
         assert session_id.startswith("anon_")
         assert len(session_id) == 21
@@ -257,7 +256,7 @@ class TestGetSessionId:
         nested_path = tmp_path / "deep" / "nested" / "client"
         with patch("skua.client.get_client_token_file", return_value=nested_path), \
              patch("skua.client.get_token", return_value=None):
-            session_id = get_session_id()
+            session_id = get_client_token()
 
         assert nested_path.parent.exists()
         assert nested_path.exists()
@@ -265,7 +264,7 @@ class TestGetSessionId:
 
     def test_session_id_format_is_hex(self, temp_session_dir):
         """Test that generated session ID uses hex characters."""
-        session_id = get_session_id()
+        session_id = get_client_token()
 
         # Extract the random part after "anon_"
         random_part = session_id[5:]
@@ -280,7 +279,7 @@ class TestGetSessionId:
         temp_session_dir.write_text("anon_file_session")
 
         with patch("skua.client.get_token", return_value="my-api-token"):
-            session_id = get_session_id()
+            session_id = get_client_token()
 
         assert session_id == "my-api-token"
 
@@ -290,7 +289,7 @@ class TestGetSessionId:
         temp_session_dir.write_text("anon_from_file")
 
         with patch("skua.client.get_token", return_value=None):
-            session_id = get_session_id()
+            session_id = get_client_token()
 
         assert session_id == "anon_from_file"
 
@@ -1079,7 +1078,7 @@ class TestUploadRecordEdgeCases:
 
 
 # =============================================================================
-# Tests: request_verification()
+# (request_verification was a back-compat alias for login(); removed in 0.13)
 # =============================================================================
 
 
@@ -1206,10 +1205,6 @@ class TestLogin:
                 "retention_days": 90,
             }
             login(timeout=5)  # should not raise
-
-    def test_backward_compat_alias(self):
-        """Test that request_verification is an alias for login."""
-        assert request_verification is login
 
 
 class TestSetToken:
@@ -1459,7 +1454,7 @@ class TestGetAuthStatus:
         assert "Failed to get authentication status" in str(exc_info.value)
 
     def test_works_without_init(self, mock_session_id, temp_session_dir):
-        """status() is a read-only check and must work before skua.init().
+        """status() is a read-only check and must work before (no setup needed).
 
         get_auth_status() no longer imports from skua.session, so there's
         no ConfigurationError risk from calling status() on a fresh kernel.

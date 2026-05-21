@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from skua.client import upload_record
+from skua.client import get_auth_status, upload_record
 from skua.config import get_api_url, get_web_url
-from skua.exceptions import ValidationError
+from skua.exceptions import UploadError, ValidationError
 from skua.result import RecordResult
 from skua.serializers import serialize_object
 
@@ -116,6 +116,18 @@ def _record_impl(
             f"Expected one of: {', '.join(_VALID_VISIBILITIES)}."
         )
 
+    # Fail-fast for anon → 'private'. The backend rejects the same shape with
+    # the same message, but it'd only fire after we serialize and upload up
+    # to 10MB. The /auth/status roundtrip is only paid when the caller asks
+    # for private explicitly — the common no-kwarg path stays network-cheap.
+    if visibility == "private":
+        if not get_auth_status().get("verified"):
+            raise UploadError(
+                "Private visibility requires a verified account. "
+                "Run `skua.login()` to verify your email, or use "
+                "visibility='unlisted' for an unguessable shareable link."
+            )
+
     serialized = serialize_object(obj)
 
     record_data: dict[str, Any] = {
@@ -156,7 +168,3 @@ def _record_impl(
         metadata["creator_username"] = creator_username
 
     return RecordResult(obj=obj, url=url, metadata=metadata)
-
-
-# Silent alias kept for old `import skua; skua.snap(...)` callers.
-snap = record

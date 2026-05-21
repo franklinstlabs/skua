@@ -1,8 +1,7 @@
 """Tests for skua.config.
 
-skua.configure() is deprecated (as of 0.11). These tests confirm it still
-works for back-compat, emits a DeprecationWarning, and that the URL/token
-getters resolve from env vars / ~/.skua/token when configure() isn't used.
+All settings come from environment variables — `skua.configure()` was
+removed in 0.13. These tests confirm the env-var resolution path works.
 """
 
 import os
@@ -13,9 +12,8 @@ import pytest
 
 import skua.config as config_module
 from skua.config import (
-    configure,
     get_api_url,
-    get_session_file,
+    get_client_token_file,
     get_token,
     get_web_url,
 )
@@ -44,36 +42,6 @@ def clean_env():
         os.environ[var] = value
 
 
-class TestConfigureEmitsDeprecationWarning:
-    """configure() is deprecated in favor of env vars + init(visibility=)."""
-
-    def test_configure_emits_warning(self, reset_config):
-        with pytest.warns(DeprecationWarning, match="deprecated"):
-            configure(api_url="http://example.com")
-
-    def test_configure_still_sets_api_url(self, reset_config):
-        with pytest.warns(DeprecationWarning):
-            configure(api_url="http://example.com")
-        assert get_api_url() == "http://example.com"
-
-    def test_configure_still_sets_web_url(self, reset_config):
-        with pytest.warns(DeprecationWarning):
-            configure(web_url="http://example.com")
-        assert get_web_url() == "http://example.com"
-
-    def test_configure_still_sets_token(self, reset_config):
-        with pytest.warns(DeprecationWarning):
-            configure(token="sk_test")
-        assert get_token() == "sk_test"
-
-    def test_configure_none_is_noop_for_unset_fields(self, reset_config):
-        with pytest.warns(DeprecationWarning):
-            configure(api_url="http://first.com")
-        with pytest.warns(DeprecationWarning):
-            configure(api_url=None)
-        assert get_api_url() == "http://first.com"
-
-
 class TestDefaultURLs:
     def test_default_api_url(self, reset_config, clean_env):
         assert get_api_url() == "https://api.skua.dev"
@@ -81,17 +49,20 @@ class TestDefaultURLs:
     def test_default_web_url(self, reset_config, clean_env):
         assert get_web_url() == "https://skua.dev"
 
-    def test_default_session_file(self, reset_config):
-        # Canonical path is ~/.skua/client now; the old `~/.skua/session`
-        # only lives on as a migration source inside get_client_token().
-        assert get_session_file() == Path.home() / ".skua" / "client"
+    def test_default_client_token_file(self, reset_config):
+        # Canonical path is ~/.skua/client. There is no longer a
+        # "session file" concept on disk.
+        assert get_client_token_file() == Path.home() / ".skua" / "client"
 
 
 class TestGetToken:
     def test_returns_none_by_default(self, reset_config, tmp_path):
         config_module._config["token"] = None
         with patch("skua.config.Path.home", return_value=tmp_path):
-            assert get_token() is None
+            # Ensure no env var leaks in from the surrounding shell.
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SKUA_TOKEN", None)
+                assert get_token() is None
 
     def test_returns_env_token(self, reset_config, tmp_path):
         config_module._config["token"] = None
@@ -100,11 +71,9 @@ class TestGetToken:
             assert get_token() == "env_token"
 
     def test_token_file_no_longer_read_directly(self, reset_config, tmp_path):
-        # `get_token()` is now strictly the explicit-override channel
-        # (env var or skua.configure(token=...)). On-disk lookup moved
-        # to client.get_client_token() so the resolution path lives in
-        # one place. Legacy ~/.skua/token is still picked up there as a
-        # migration source — see test_client.py for that coverage.
+        # `get_token()` is strictly the explicit-override channel (env var
+        # or in-memory _config). On-disk lookup lives in
+        # client.get_client_token() — see test_client.py for that coverage.
         config_module._config["token"] = None
         skua_dir = tmp_path / ".skua"
         skua_dir.mkdir()
@@ -113,9 +82,3 @@ class TestGetToken:
              patch("skua.config.Path.home", return_value=tmp_path):
             os.environ.pop("SKUA_TOKEN", None)
             assert get_token() is None
-
-    def test_runtime_config_beats_env(self, reset_config):
-        with pytest.warns(DeprecationWarning):
-            configure(token="runtime")
-        with patch.dict(os.environ, {"SKUA_TOKEN": "env"}):
-            assert get_token() == "runtime"

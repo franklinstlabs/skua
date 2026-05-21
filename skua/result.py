@@ -1,4 +1,4 @@
-"""RecordResult — rich result object returned by skua.record(). SnapResult kept as alias."""
+"""RecordResult — rich result object returned by skua.record() (exported as `Record`)."""
 
 from __future__ import annotations
 
@@ -244,9 +244,3 @@ class RecordResult:
         if isinstance(other, RecordResult):
             return self._obj ** other._obj
         return self._obj ** other
-
-
-# Silent back-compat alias — the class was named SnapResult before the
-# snap→record rename. Not in __all__, not in docs. Kept so old imports and
-# traceback-matching code keep working.
-SnapResult = RecordResult

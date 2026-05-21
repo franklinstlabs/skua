@@ -11,7 +11,7 @@ import requests
 
 from skua.client import (
     get_auth_status,
-    get_session_id,
+    get_client_token,
     login,
     set_token,
     upload_record,
@@ -266,10 +266,6 @@ def record(file: str, title: str, description: Optional[str],
         sys.exit(_handle_error(e, json_output))
 
 
-# Silent alias for `skua record` — rename happened for trademark distance.
-main.add_command(record, name="snap")
-
-
 @main.command()
 def status():
     """Show authentication status."""
@@ -313,7 +309,7 @@ def list_cmd(json_output: bool):
     """List your records."""
     try:
         api_url = get_api_url()
-        session_id = get_session_id()
+        session_id = get_client_token()
         response = requests.get(
             f"{api_url}/auth/me/records",
             headers={"X-Skua-Token": session_id},

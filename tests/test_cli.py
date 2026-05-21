@@ -1,7 +1,7 @@
 """Tests for the Skua CLI.
 
 Covers:
-- skua snap: file upload, stdin, auto-detection, --json output
+- skua record: file upload, stdin, auto-detection, --json output
 - skua status: auth status display
 - skua login: browser open
 - skua verify: token activation
@@ -207,42 +207,42 @@ class TestBuildContent:
 # =============================================================================
 
 
-class TestSnapCommand:
-    def test_snap_png(self, runner, png_file, mock_upload):
-        result = runner.invoke(main, ["snap", str(png_file), "--title", "My Chart"])
+class TestRecordCommand:
+    def test_record_png(self, runner, png_file, mock_upload):
+        result = runner.invoke(main, ["record", str(png_file), "--title", "My Chart"])
         assert result.exit_code == EXIT_OK
         assert "abc123" in result.output
         assert "\u2713" in result.output
         mock_upload.assert_called_once()
 
-    def test_snap_csv(self, runner, csv_file, mock_upload):
-        result = runner.invoke(main, ["snap", str(csv_file), "--title", "Data"])
+    def test_record_csv(self, runner, csv_file, mock_upload):
+        result = runner.invoke(main, ["record", str(csv_file), "--title", "Data"])
         assert result.exit_code == EXIT_OK
         assert "abc123" in result.output
         call_data = mock_upload.call_args[0][0]
         assert call_data["content"]["type"] == "pandas.dataframe"
 
-    def test_snap_json(self, runner, json_file, mock_upload):
-        result = runner.invoke(main, ["snap", str(json_file), "--title", "Config"])
+    def test_record_json(self, runner, json_file, mock_upload):
+        result = runner.invoke(main, ["record", str(json_file), "--title", "Config"])
         assert result.exit_code == EXIT_OK
         call_data = mock_upload.call_args[0][0]
         assert call_data["content"]["type"] == "dict"
 
-    def test_snap_plotly_json(self, runner, plotly_json_file, mock_upload):
-        result = runner.invoke(main, ["snap", str(plotly_json_file), "--title", "Plot"])
+    def test_record_plotly_json(self, runner, plotly_json_file, mock_upload):
+        result = runner.invoke(main, ["record", str(plotly_json_file), "--title", "Plot"])
         assert result.exit_code == EXIT_OK
         call_data = mock_upload.call_args[0][0]
         assert call_data["content"]["type"] == "plotly.figure"
 
-    def test_snap_text(self, runner, text_file, mock_upload):
-        result = runner.invoke(main, ["snap", str(text_file), "--title", "Notes"])
+    def test_record_text(self, runner, text_file, mock_upload):
+        result = runner.invoke(main, ["record", str(text_file), "--title", "Notes"])
         assert result.exit_code == EXIT_OK
         call_data = mock_upload.call_args[0][0]
         assert call_data["content"]["type"] == "text"
 
-    def test_snap_json_output(self, runner, png_file, mock_upload):
+    def test_record_json_output(self, runner, png_file, mock_upload):
         result = runner.invoke(main, [
-            "snap", str(png_file), "--title", "Chart", "--json"
+            "record", str(png_file), "--title", "Chart", "--json"
         ])
         assert result.exit_code == EXIT_OK
         parsed = json.loads(result.output)
@@ -250,60 +250,60 @@ class TestSnapCommand:
         assert parsed["id"] == "abc123"
         assert parsed["visibility"] == "public"
 
-    def test_snap_public_flag(self, runner, png_file, mock_upload):
+    def test_record_public_flag(self, runner, png_file, mock_upload):
         result = runner.invoke(main, [
-            "snap", str(png_file), "--title", "Chart", "--public"
+            "record", str(png_file), "--title", "Chart", "--public"
         ])
         assert result.exit_code == EXIT_OK
         call_data = mock_upload.call_args[0][0]
         assert call_data["visibility"] == "public"
 
-    def test_snap_description(self, runner, png_file, mock_upload):
+    def test_record_description(self, runner, png_file, mock_upload):
         result = runner.invoke(main, [
-            "snap", str(png_file), "--title", "Chart",
+            "record", str(png_file), "--title", "Chart",
             "--description", "Q3 revenue chart"
         ])
         assert result.exit_code == EXIT_OK
         call_data = mock_upload.call_args[0][0]
         assert call_data["description"] == "Q3 revenue chart"
 
-    def test_snap_stdin_requires_type(self, runner):
-        result = runner.invoke(main, ["snap", "-", "--title", "X"], input=b"data")
+    def test_record_stdin_requires_type(self, runner):
+        result = runner.invoke(main, ["record", "-", "--title", "X"], input=b"data")
         assert result.exit_code == EXIT_VALIDATION
 
-    def test_snap_stdin_with_type(self, runner, mock_upload):
+    def test_record_stdin_with_type(self, runner, mock_upload):
         result = runner.invoke(
             main,
-            ["snap", "-", "--title", "Piped", "--type", "text"],
+            ["record", "-", "--title", "Piped", "--type", "text"],
             input="hello from stdin",
         )
         assert result.exit_code == EXIT_OK
         call_data = mock_upload.call_args[0][0]
         assert call_data["content"]["type"] == "text"
 
-    def test_snap_file_not_found(self, runner):
+    def test_record_file_not_found(self, runner):
         result = runner.invoke(main, [
-            "snap", "/nonexistent/file.png", "--title", "X"
+            "record", "/nonexistent/file.png", "--title", "X"
         ])
         assert result.exit_code == EXIT_VALIDATION
 
-    def test_snap_unknown_extension(self, runner, tmp_path):
+    def test_record_unknown_extension(self, runner, tmp_path):
         path = tmp_path / "data.parquet"
         path.write_bytes(b"fake")
-        result = runner.invoke(main, ["snap", str(path), "--title", "X"])
+        result = runner.invoke(main, ["record", str(path), "--title", "X"])
         assert result.exit_code == EXIT_VALIDATION
 
-    def test_snap_unknown_extension_with_type(self, runner, tmp_path, mock_upload):
+    def test_record_unknown_extension_with_type(self, runner, tmp_path, mock_upload):
         path = tmp_path / "data.parquet"
         path.write_bytes(b"fake text content")
         result = runner.invoke(main, [
-            "snap", str(path), "--title", "X", "--type", "text"
+            "record", str(path), "--title", "X", "--type", "text"
         ])
         assert result.exit_code == EXIT_OK
 
-    def test_snap_visibility_in_output(self, runner, png_file, mock_upload):
+    def test_record_visibility_in_output(self, runner, png_file, mock_upload):
         result = runner.invoke(main, [
-            "snap", str(png_file), "--title", "Chart"
+            "record", str(png_file), "--title", "Chart"
         ])
         assert "(public)" in result.output
 
@@ -313,32 +313,32 @@ class TestSnapCommand:
 # =============================================================================
 
 
-class TestSnapErrors:
+class TestRecordErrors:
     def test_upload_error_server(self, runner, png_file):
         with patch("skua.cli.upload_record", side_effect=UploadError("500 Server Error")):
             result = runner.invoke(main, [
-                "snap", str(png_file), "--title", "X"
+                "record", str(png_file), "--title", "X"
             ])
             assert result.exit_code == EXIT_SERVER
 
     def test_upload_error_auth(self, runner, png_file):
         with patch("skua.cli.upload_record", side_effect=UploadError("401 Unauthorized")):
             result = runner.invoke(main, [
-                "snap", str(png_file), "--title", "X"
+                "record", str(png_file), "--title", "X"
             ])
             assert result.exit_code == EXIT_AUTH
 
     def test_upload_error_rate_limited(self, runner, png_file):
         with patch("skua.cli.upload_record", side_effect=UploadError("429 rate limited")):
             result = runner.invoke(main, [
-                "snap", str(png_file), "--title", "X"
+                "record", str(png_file), "--title", "X"
             ])
             assert result.exit_code == EXIT_RATE_LIMITED
 
     def test_upload_error_json_output(self, runner, png_file):
         with patch("skua.cli.upload_record", side_effect=UploadError("500 Error")):
             result = runner.invoke(main, [
-                "snap", str(png_file), "--title", "X", "--json"
+                "record", str(png_file), "--title", "X", "--json"
             ])
             assert result.exit_code == EXIT_SERVER
             parsed = json.loads(result.output)
@@ -436,7 +436,7 @@ class TestListCommand:
         mock_resp.raise_for_status.return_value = None
 
         with patch("skua.cli.requests.get", return_value=mock_resp), \
-             patch("skua.cli.get_session_id", return_value="anon_test"), \
+             patch("skua.cli.get_client_token", return_value="anon_test"), \
              patch("skua.cli.get_api_url", return_value="https://api.skua.dev"):
             result = runner.invoke(main, ["list"])
             assert result.exit_code == EXIT_OK
@@ -450,7 +450,7 @@ class TestListCommand:
         mock_resp.raise_for_status.return_value = None
 
         with patch("skua.cli.requests.get", return_value=mock_resp), \
-             patch("skua.cli.get_session_id", return_value="anon_test"), \
+             patch("skua.cli.get_client_token", return_value="anon_test"), \
              patch("skua.cli.get_api_url", return_value="https://api.skua.dev"):
             result = runner.invoke(main, ["list"])
             assert result.exit_code == EXIT_OK
@@ -463,7 +463,7 @@ class TestListCommand:
         mock_resp.raise_for_status.return_value = None
 
         with patch("skua.cli.requests.get", return_value=mock_resp), \
-             patch("skua.cli.get_session_id", return_value="anon_test"), \
+             patch("skua.cli.get_client_token", return_value="anon_test"), \
              patch("skua.cli.get_api_url", return_value="https://api.skua.dev"):
             result = runner.invoke(main, ["list", "--json"])
             assert result.exit_code == EXIT_OK
@@ -478,7 +478,7 @@ class TestListCommand:
         mock_resp.raise_for_status.side_effect = http_err
 
         with patch("skua.cli.requests.get", return_value=mock_resp), \
-             patch("skua.cli.get_session_id", return_value="anon_test"), \
+             patch("skua.cli.get_client_token", return_value="anon_test"), \
              patch("skua.cli.get_api_url", return_value="https://api.skua.dev"):
             result = runner.invoke(main, ["list"])
             assert result.exit_code == EXIT_RATE_LIMITED
@@ -490,7 +490,7 @@ class TestListCommand:
         mock_resp.raise_for_status.side_effect = http_err
 
         with patch("skua.cli.requests.get", return_value=mock_resp), \
-             patch("skua.cli.get_session_id", return_value="anon_test"), \
+             patch("skua.cli.get_client_token", return_value="anon_test"), \
              patch("skua.cli.get_api_url", return_value="https://api.skua.dev"):
             result = runner.invoke(main, ["list"])
             assert result.exit_code == EXIT_AUTH

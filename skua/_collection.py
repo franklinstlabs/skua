@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from skua.exceptions import ConfigurationError, ValidationError
+from skua.client import get_auth_status
+from skua.exceptions import ConfigurationError, UploadError, ValidationError
 
 Visibility = Literal["public", "unlisted", "private"]
 _VALID_VISIBILITIES = ("public", "unlisted", "private")
@@ -135,6 +136,17 @@ def collection(name: str, *, visibility: Optional[Visibility] = None) -> Collect
                 f"with visibility={visibility!r}."
             )
         return existing
+
+    # Fail-fast for anon → 'private' before any backend roundtrip. Same
+    # rationale as record.py: only paid when 'private' is requested
+    # explicitly, common path stays network-cheap.
+    if visibility == "private":
+        if not get_auth_status().get("verified"):
+            raise UploadError(
+                "Private visibility requires a verified account. "
+                "Run `skua.login()` to verify your email, or use "
+                "visibility='unlisted' for an unguessable shareable link."
+            )
 
     # First touch in this process — synchronous backend resolution. The
     # server's 409 on visibility mismatch is converted to ConfigurationError

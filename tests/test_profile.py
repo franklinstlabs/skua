@@ -18,7 +18,7 @@ from skua.profile import open_profile
 
 @pytest.fixture
 def mock_session_id():
-    with patch("skua.profile.get_session_id", return_value="sk_cli_token"):
+    with patch("skua.profile.get_client_token", return_value="sk_cli_token"):
         yield
 
 

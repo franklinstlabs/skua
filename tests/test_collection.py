@@ -107,12 +107,41 @@ class TestCollectionVisibility:
             c1 = skua.collection("Q3", visibility="unlisted")
             c2 = skua.collection("Q3", visibility="unlisted")
         assert c1 is c2
+
+    def test_anon_private_raises_before_backend(self):
+        """visibility='private' triggers a /auth/status check; anon → UploadError
+        before any POST /collections roundtrip."""
+        from skua.exceptions import UploadError
+        with patch("skua._collection.get_auth_status") as mock_status, \
+             patch("skua.client.create_or_get_collection") as backend:
+            mock_status.return_value = {"verified": False, "username": "anon-1"}
+            with pytest.raises(UploadError, match="verified"):
+                skua.collection("Anon Private", visibility="private")
+            backend.assert_not_called()
+
+    def test_verified_private_proceeds(self):
+        with patch("skua._collection.get_auth_status") as mock_status, \
+             patch("skua.client.create_or_get_collection") as backend:
+            mock_status.return_value = {"verified": True, "username": "verified-1"}
+            backend.return_value = _stub_response("Verified Private", visibility="private")
+            handle = skua.collection("Verified Private", visibility="private")
+            assert handle.visibility == "private"
+            backend.assert_called_once()
+
+    def test_unlisted_skips_status_check(self):
+        with patch("skua._collection.get_auth_status") as mock_status, \
+             patch("skua.client.create_or_get_collection") as backend:
+            backend.return_value = _stub_response("Q3", visibility="unlisted")
+            skua.collection("Q3", visibility="unlisted")
+            mock_status.assert_not_called()
         assert backend.call_count == 1, "should not retry the backend on cache hit"
 
     def test_no_kwarg_after_kwarg_returns_cached(self):
         """Caller drops the kwarg on a second access; resolves to existing handle
         regardless of stored visibility — no error, no backend call."""
-        with patch("skua.client.create_or_get_collection") as backend:
+        with patch("skua._collection.get_auth_status") as mock_status, \
+             patch("skua.client.create_or_get_collection") as backend:
+            mock_status.return_value = {"verified": True}
             backend.return_value = _stub_response("Q3", visibility="private")
             c1 = skua.collection("Q3", visibility="private")
             c2 = skua.collection("Q3")  # no kwarg, should resolve fine

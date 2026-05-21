@@ -7,6 +7,46 @@ one user-visible thing per line.
 Each release must have a section before it can be published — `release-package.yml`
 extracts the entry for the current version and uses it as the mirror commit body.
 
+## 0.13.0 — 2026-05-21
+
+- `skua.record(..., visibility="private")` and `skua.collection(name,
+  visibility="private")` now raise `UploadError` immediately if the
+  account is not verified — before any serialization or upload. The
+  backend rejects this with 422; the SDK fail-fast saves you a 10MB
+  upload on a guaranteed reject. The `/auth/status` roundtrip is only
+  paid when `visibility="private"` is passed explicitly; the common
+  default path stays network-cheap. `unlisted` and `public` remain
+  available for anonymous accounts — `unlisted` is the right choice if
+  you want a hard-to-guess shareable link without verifying.
+
+Back-compat pruning pass. Everything below was previously kept as a silent
+alias for pre-0.11 / pre-0.12 callers; with 0.12.0 just out as the first
+stable on the collections API and no real users yet, this is the right
+moment to delete the cruft before pinning the surface for v1.
+
+Removed (would fail with `AttributeError` / `ImportError`):
+
+- `skua.snap()` — use `skua.record()`.
+- `skua.SnapResult` (also re-exported from `skua.result`) — use `RecordResult`.
+- `skua snap <file>` CLI subcommand — use `skua record <file>`.
+- `skua.init()` — gone. Bare `skua.record()` writes to your per-user
+  `Default` collection; named scopes use `skua.collection(name).record(...)`.
+  The 0.12 deprecation cushion that raised `ConfigurationError` with a
+  migration snippet is also gone — calling init() now fails with the
+  standard Python `AttributeError`.
+- `skua.configure()` — set `SKUA_API_URL` / `SKUA_WEB_URL` / `SKUA_TOKEN`
+  via environment variables instead.
+- `skua.token()` — alias for `skua.auth()`. Use `skua.auth(token)`.
+- `skua.client.upload_snapshot` / `skua.client.upload_finding` — internal
+  helpers; use `skua.client.upload_record` if you really need the raw
+  function (most callers should use `skua.record(...)`).
+- `skua.client.get_session_id` — use `skua.client.get_client_token`.
+- `skua.client.request_verification` — use `skua.client.login`.
+- `skua.config.get_session_file` — use `skua.config.get_client_token_file`.
+- `~/.skua/session` / `~/.skua/token` legacy fallback. Only `~/.skua/client`
+  is read now. If you have a verified token in the old location, copy it
+  to `~/.skua/client` before upgrading.
+
 ## 0.12.0 — 2026-05-19
 
 - First stable release on the collections API. `skua.init()` is gone — bare `skua.record()` writes to your per-user `Default` bucket; named scopes use `skua.collection(name).record(...)`. Re-call with the same `(collection, title)` to update a record in place.

@@ -14,7 +14,7 @@ from typing import Any
 
 import requests
 
-from skua.client import _extract_error_detail, get_session_id
+from skua.client import _extract_error_detail, get_client_token
 from skua.config import get_api_url, get_web_url
 from skua.exceptions import UploadError
 
@@ -47,7 +47,7 @@ def open_profile(open_browser: bool = True) -> str:
         >>> url = skua.open_profile()    # opens your profile in the browser
     """
     api_url = get_api_url()
-    session_id = get_session_id()
+    session_id = get_client_token()
 
     # Ask the API who this session belongs to. Using /auth/status instead
     # of branching on a local `anon_` prefix because verified clients keep
